@@ -24,10 +24,20 @@ let text = existsSync(envPath) ? readFileSync(envPath, "utf8") : readFileSync(jo
 const set = (key, value) => {
   const cur = parse(text)[key];
   if (cur) return; // já preenchido: respeita o usuário
-  text = text.replace(new RegExp(`^${key}=.*$`, "m"), `${key}=${value}`);
+  const linha = new RegExp(`^${key}=.*$`, "m");
+  text = linha.test(text) ? text.replace(linha, `${key}=${value}`) : `${text.trimEnd()}
+${key}=${value}
+`;
 };
 
+// Padrões para .env criados antes destas variáveis existirem
+set("LLM_PROVEDOR", "codex");
+set("CODEX_RUN_MODEL", "gpt-5.6-luna");
+set("CODEX_FALLBACK_MODEL", "gpt-5.6-terra");
+set("LLM_GATEWAY_URL", "http://host.docker.internal:8787");
+
 set("N8N_WEBHOOK_SECRET", randomBytes(24).toString("hex"));
+set("LLM_GATEWAY_SECRET", randomBytes(24).toString("hex"));
 
 let status = null;
 try {
@@ -63,8 +73,8 @@ if (status) {
 const credsDir = join(root, "n8n", ".credentials");
 mkdirSync(credsDir, { recursive: true });
 const credentials = [
-  { id: "ooCredAnthropic1", name: "Anthropic API", type: "httpHeaderAuth",
-    data: { name: "x-api-key", value: env.ANTHROPIC_API_KEY ?? "" } },
+  { id: "ooCredLlmGateway", name: "LLM gateway secret", type: "httpHeaderAuth",
+    data: { name: "x-gateway-secret", value: env.LLM_GATEWAY_SECRET } },
   { id: "ooCredSupabase01", name: "Supabase service role", type: "httpCustomAuth",
     data: { json: JSON.stringify({ headers: {
       apikey: env.SUPABASE_SECRET_KEY ?? "",
@@ -78,6 +88,6 @@ const credentials = [
 ];
 writeFileSync(join(credsDir, "credentials.json"), JSON.stringify(credentials, null, 2));
 
-const missing = ["ANTHROPIC_API_KEY", "SUPABASE_SECRET_KEY"].filter((k) => !env[k]);
+const missing = ["SUPABASE_SECRET_KEY", ...(env.LLM_PROVEDOR === "anthropic" ? ["ANTHROPIC_API_KEY"] : [])].filter((k) => !env[k]);
 console.log("✓ .env, supabase/functions/.env e n8n/.credentials/credentials.json atualizados");
 if (missing.length) console.log("! Falta preencher no .env: " + missing.join(", ") + " (e rodar `npm run setup` de novo)");

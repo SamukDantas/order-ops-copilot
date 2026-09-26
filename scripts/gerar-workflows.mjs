@@ -8,7 +8,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SYSTEM_PROMPT, OUTPUT_SCHEMA, MODEL, PROMPT_VERSION, ANTHROPIC_BETA, buildReviewRequest } from "../lib/review-request.mjs";
+import { SYSTEM_PROMPT, OUTPUT_SCHEMA, MODEL, PROMPT_VERSION, buildReviewRequest } from "../lib/review-request.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = join(root, "n8n", "workflows");
@@ -17,7 +17,7 @@ mkdirSync(outDir, { recursive: true });
 // ─── IDs estáveis (reimportar atualiza em vez de duplicar) ───────────
 const WF = { revisar: "ooRevisarPedido1", aplicar: "ooAplicarDecisa1", erros: "ooTratarErros001" };
 const CRED = {
-  anthropic: { id: "ooCredAnthropic1", name: "Anthropic API" },
+  llm: { id: "ooCredLlmGateway", name: "LLM gateway secret" },
   supabase: { id: "ooCredSupabase01", name: "Supabase service role" },
   webhook: { id: "ooCredWebhook001", name: "n8n webhook secret" },
   shopify: { id: "ooCredShopify001", name: "Shopify Admin API" },
@@ -148,16 +148,13 @@ for (const { json: order } of $input.all()) {
   }
 }
 return out;`),
-  httpJson("Claude: revisar item", pos(4, 0), {
-    url: "https://api.anthropic.com/v1/messages",
+  // O provedor (Codex CLI ou Messages API) fica atrás do gateway no host: ver services/llm-gateway.mjs
+  httpJson("LLM: revisar item", pos(4, 0), {
+    url: "={{ $env.LLM_GATEWAY_URL }}/v1/messages",
     body: "={{ JSON.stringify($json.request) }}",
-    headers: [
-      { name: "anthropic-version", value: "2023-06-01" },
-      { name: "anthropic-beta", value: ANTHROPIC_BETA },
-    ],
     auth: { authentication: "genericCredentialType", genericAuthType: "httpHeaderAuth" },
-    creds: { httpHeaderAuth: CRED.anthropic },
-    options: { timeout: 120000 },
+    creds: { httpHeaderAuth: CRED.llm },
+    options: { timeout: 200000 },
     extra: { retryOnFail: true, maxTries: 3, waitBetweenTries: 5000, onError: "continueRegularOutput" },
   }),
   code("Interpretar e rotear", pos(5, 0), `${reviewLogicSrc}
@@ -178,7 +175,7 @@ $input.all().forEach(({ json: resp }, i) => {
     ? { ...parsed.review, model: parsed.model ?? ctx.request.model }
     : { verdict: "unavailable", issues: ["AI review unavailable: please review manually"],
         suggested_text: null, customer_message: null, confidence: 0, model: ctx.request.model };
-  if (!parsed.ok) failures.push({ workflow: "Revisar pedido", node: "Claude: revisar item",
+  if (!parsed.ok) failures.push({ workflow: "Revisar pedido", node: "LLM: revisar item",
     order_id: ctx.order_id, message: parsed.reason, details: { order_item_id: ctx.order_item_id } });
 
   const entry = byOrder.get(ctx.order_id) ?? { order_id: ctx.order_id, statuses: [], results: [] };
@@ -221,8 +218,8 @@ const revisar = workflow(WF.revisar, "Revisar pedido", revisarNodes, connect([
   ["Pedido do webhook", "Claim de pedidos"],
   ["Sweep de pendentes", "Claim de pedidos"],
   ["Claim de pedidos", "Montar requisições"],
-  ["Montar requisições", "Claude: revisar item"],
-  ["Claude: revisar item", "Interpretar e rotear"],
+  ["Montar requisições", "LLM: revisar item"],
+  ["LLM: revisar item", "Interpretar e rotear"],
   ["Interpretar e rotear", "Salvar revisões"],
   ["Salvar revisões", "Repassar contexto"],
   ["Repassar contexto", "Aprovado automaticamente?"],
@@ -237,8 +234,11 @@ const aplicarNodes = [
   httpJson("Buscar pedido", pos(1), {
     method: "GET",
     url: `=${"{{ $env.SUPABASE_URL }}"}/rest/v1/orders?id=eq.{{ $json.body.order_id }}&select=id,order_number,shopify_order_id,status,brands(shop_domain),order_items(title,reviews(verdict,created_at,review_decisions(action,final_text,created_at)))`,
+    // Objeto único (406 se o pedido não existir). O n8n não reconhece esse
+    // content-type como JSON e entregaria texto: o formato é forçado.
     headers: [{ name: "Accept", value: "application/vnd.pgrst.object+json" }],
     auth: supabaseAuth, creds: supabaseCreds,
+    options: { response: { response: { responseFormat: "json" } } },
   }),
   code("Montar tags e nota", pos(2), `const o = $json;
 const TAGS = {

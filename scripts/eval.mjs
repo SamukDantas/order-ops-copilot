@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 // Avalia o prompt atual contra o conjunto rotulado em evals/cases.json.
-// Usa exatamente a mesma requisição que o workflow do n8n (lib/review-request.mjs).
+// Usa exatamente a mesma requisição e o mesmo provedor (LLM_PROVEDOR) do fluxo real.
 //
 // Uso: npm run eval [-- --only id1,id2]
-// Custa chamadas reais à API: ~1 requisição por caso.
+// Custa uma chamada real por caso (cota do Codex ou crédito da API).
 
-import Anthropic from "@anthropic-ai/sdk";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildReviewRequest, ANTHROPIC_BETA, PROMPT_VERSION } from "../lib/review-request.mjs";
+import { buildReviewRequest, PROMPT_VERSION } from "../lib/review-request.mjs";
+import { completar, provedor, codexModelo } from "../lib/llm-provider.mjs";
 import { parseReviewResponse } from "../lib/review-logic.mjs";
 import { checkPersonalisation } from "../supabase/functions/_shared/checks.ts";
 
@@ -21,7 +21,6 @@ if (onlyIdx > -1) {
   cases = cases.filter((c) => ids.has(c.id));
 }
 
-const client = new Anthropic();
 const ORDER_DATE = "2026-09-26";
 
 async function runCase(c) {
@@ -30,7 +29,7 @@ async function runCase(c) {
   const t0 = Date.now();
   let resp;
   try {
-    resp = await client.beta.messages.create({ ...body, betas: [ANTHROPIC_BETA] });
+    resp = await completar(body);
   } catch (e) {
     return { id: c.id, expect: c.expect, verdict: null, pass: false, error: e.message ?? String(e) };
   }
@@ -42,6 +41,7 @@ async function runCase(c) {
     confidence: parsed.ok ? parsed.review.confidence : null,
     issues: parsed.ok ? parsed.review.issues : [parsed.reason],
     latency_ms: Date.now() - t0,
+    model: resp.model,
     usage: resp.usage,
   };
 }
@@ -49,7 +49,9 @@ async function runCase(c) {
 // Concorrência limitada para não estourar rate limit
 const results = [];
 const queue = [...cases];
-await Promise.all(Array.from({ length: 4 }, async () => {
+const PARALELO = Number(process.env.EVAL_PARALELO || (provedor() === "codex" ? 2 : 4));
+console.log(`provedor: ${provedor()}${provedor() === "codex" ? " (" + codexModelo() + ")" : ""}`);
+await Promise.all(Array.from({ length: PARALELO }, async () => {
   while (queue.length) {
     const c = queue.shift();
     const r = await runCase(c);
@@ -68,6 +70,8 @@ const pct = (x) => (Number.isFinite(x) ? (x * 100).toFixed(0) + "%" : "n/a");
 
 const summary = {
   prompt_version: PROMPT_VERSION,
+  provider: provedor(),
+  model: results.find((r) => r.model)?.model ?? null,
   cases: results.length,
   exact_accuracy: results.filter((r) => r.pass).length / results.length,
   flag_precision: tp / (tp + fp),
