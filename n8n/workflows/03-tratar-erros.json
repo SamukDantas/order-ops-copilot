@@ -1,0 +1,66 @@
+{
+  "id": "ooTratarErros001",
+  "name": "Tratar erros",
+  "active": false,
+  "nodes": [
+    {
+      "id": "error-trigger",
+      "name": "Falha em workflow",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "registrar-erro",
+      "name": "Registrar erro",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        260,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/workflow_errors",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendHeaders": false,
+        "headerParameters": {
+          "parameters": []
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  workflow: $json.workflow?.name ?? \"desconhecido\",\n  node: $json.execution?.lastNodeExecuted ?? null,\n  message: ($json.execution?.error?.message ?? \"erro sem mensagem\").slice(0, 1000),\n  details: { execution_id: $json.execution?.id, stack: ($json.execution?.error?.stack ?? \"\").slice(0, 2000) },\n  execution_url: $json.execution?.url ?? null\n}) }}",
+        "options": {}
+      },
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "ooCredSupabase01",
+          "name": "Supabase service role"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Falha em workflow": {
+      "main": [
+        [
+          {
+            "node": "Registrar erro",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "tags": []
+}

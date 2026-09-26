@@ -1,0 +1,10 @@
+node_modules/
+.env
+.env.local
+supabase/functions/.env
+n8n/.credentials/
+evals/results/
+.next/
+.vercel/
+*.log
+.DS_Store

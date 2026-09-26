@@ -1,0 +1,33 @@
+# n8n local para o Order Ops Copilot.
+# O Supabase local roda via `supabase start` (portas 5432x no host);
+# o n8n alcança o host por host.docker.internal.
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:${N8N_VERSION:-latest}
+    container_name: order-ops-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    env_file:
+      - ../.env
+    environment:
+      GENERIC_TIMEZONE: Europe/London
+      TZ: Europe/London
+      N8N_HOST: localhost
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:5678/
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_RUNNERS_ENABLED: "true"
+      # Os workflows leem SUPABASE_URL / SHOPIFY_MODE / N8N_BASE_URL de $env
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./workflows:/import/workflows:ro
+      - ./.credentials:/import/credentials:ro
+
+volumes:
+  n8n_data:

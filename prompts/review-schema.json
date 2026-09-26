@@ -1,0 +1,29 @@
+{
+  "type": "object",
+  "properties": {
+    "verdict": { "type": "string", "enum": ["ok", "fix", "reject"] },
+    "issues": { "type": "array", "items": { "type": "string" } },
+    "suggested_text": {
+      "anyOf": [
+        {
+          "type": "array",
+          "description": "Corrected personalisation, one entry per input field, same field names.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "value": { "type": "string" }
+            },
+            "required": ["name", "value"],
+            "additionalProperties": false
+          }
+        },
+        { "type": "null" }
+      ]
+    },
+    "confidence": { "type": "number" },
+    "customer_message": { "anyOf": [{ "type": "string" }, { "type": "null" }] }
+  },
+  "required": ["verdict", "issues", "suggested_text", "confidence", "customer_message"],
+  "additionalProperties": false
+}
