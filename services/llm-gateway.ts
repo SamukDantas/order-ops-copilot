@@ -12,9 +12,10 @@
 //
 // Uso: npm run gateway
 
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import { completar, provedor, codexModelo } from "../lib/llm-provider.mjs";
+import { completar, provedor, codexModelo } from "../lib/llm-provider.ts";
+import type { LlmError, ReviewRequest } from "../lib/types.ts";
 
 const PORTA = Number(process.env.LLM_GATEWAY_PORT || 8787);
 const HOST = process.env.LLM_GATEWAY_HOST || "0.0.0.0";
@@ -23,6 +24,7 @@ const SEGREDO = process.env.LLM_GATEWAY_SECRET || "";
 // e queima cota em rajada. Excedente espera aqui, com teto de fila.
 const PARALELO = Number(process.env.LLM_GATEWAY_PARALELO || 2);
 const FILA_MAX = 50;
+const CORPO_MAX = 1_000_000;
 
 if (!SEGREDO) {
   console.error("LLM_GATEWAY_SECRET não definido (rode npm run setup).");
@@ -30,23 +32,36 @@ if (!SEGREDO) {
 }
 
 let ativos = 0;
-const fila = [];
-const liberar = () => { ativos--; fila.shift()?.(); };
-const ocupar = () => new Promise((ok) => {
+const fila: (() => void)[] = [];
+const liberar = (): void => { ativos--; fila.shift()?.(); };
+const ocupar = (): Promise<void> => new Promise((ok) => {
   if (ativos < PARALELO) { ativos++; ok(); } else fila.push(() => { ativos++; ok(); });
 });
 
-const segredoOk = (valor) => {
+const segredoOk = (valor: string | string[] | undefined): boolean => {
   const a = Buffer.from(String(valor ?? ""));
   const b = Buffer.from(SEGREDO);
   return a.length === b.length && timingSafeEqual(a, b);
 };
 
-const responder = (res, status, corpo) => {
+const responder = (res: ServerResponse, status: number, corpo: unknown): void => {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(corpo));
 };
-const erro = (res, status, tipo, mensagem) => responder(res, status, { type: "error", error: { type: tipo, message: mensagem } });
+
+const erro = (res: ServerResponse, status: number, tipo: string, mensagem: string): void => {
+  const corpo: LlmError = { type: "error", error: { type: tipo, message: mensagem } };
+  responder(res, status, corpo);
+};
+
+/** Validação estrutural mínima: o que vem pela rede é `unknown` até provar o contrário. */
+function isReviewRequest(x: unknown): x is ReviewRequest {
+  const r = x as Partial<ReviewRequest> | null;
+  return !!r && typeof r === "object"
+    && typeof r.system === "string"
+    && Array.isArray(r.messages) && r.messages.length > 0
+    && typeof r.output_config?.format?.schema === "object";
+}
 
 createServer(async (req, res) => {
   if (req.method === "GET" && req.url === "/health") {
@@ -58,15 +73,16 @@ createServer(async (req, res) => {
 
   let corpo = "";
   for await (const parte of req) {
-    corpo += parte;
-    if (corpo.length > 1_000_000) return erro(res, 413, "invalid_request_error", "corpo grande demais");
+    corpo += String(parte);
+    if (corpo.length > CORPO_MAX) return erro(res, 413, "invalid_request_error", "corpo grande demais");
   }
-  let request;
+  let request: unknown;
   try {
     request = JSON.parse(corpo);
   } catch {
     return erro(res, 400, "invalid_request_error", "JSON inválido");
   }
+  if (!isReviewRequest(request)) return erro(res, 400, "invalid_request_error", "corpo fora do contrato ReviewRequest");
 
   await ocupar();
   const t0 = Date.now();
@@ -75,7 +91,7 @@ createServer(async (req, res) => {
     console.log(`200 ${resposta.model} ${Date.now() - t0}ms`);
     responder(res, 200, resposta);
   } catch (e) {
-    const msg = String(e?.message ?? e).slice(0, 500);
+    const msg = (e instanceof Error ? e.message : String(e)).slice(0, 500);
     console.warn(`502 ${Date.now() - t0}ms ${msg}`);
     erro(res, 502, "provider_error", msg);
   } finally {

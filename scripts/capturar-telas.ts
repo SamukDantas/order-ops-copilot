@@ -3,9 +3,9 @@
 // Pré-requisitos: dashboard em http://localhost:3000 (npm run web), usuários demo
 // e pedidos revisados. Usa o Edge instalado (channel msedge): não baixa navegador.
 
-import { chromium } from "playwright";
+import { chromium, type Page } from "playwright";
 import { mkdirSync } from "node:fs";
-import { DEMO_PASSWORD } from "./demo-config.mjs";
+import { DEMO_PASSWORD } from "./demo-config.ts";
 
 const BASE = process.env.DASHBOARD_URL || "http://localhost:3000";
 const OUT = "docs/screenshots";
@@ -13,7 +13,7 @@ mkdirSync(OUT, { recursive: true });
 
 const browser = await chromium.launch({ channel: "msedge" });
 
-async function sessao(email, colorScheme) {
+async function sessao(email: string, colorScheme: "light" | "dark") {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2, colorScheme });
   const page = await ctx.newPage();
   await page.goto(`${BASE}/login`);
@@ -23,7 +23,7 @@ async function sessao(email, colorScheme) {
   return { ctx, page };
 }
 
-async function pedido(page, numero) {
+async function pedido(page: Page, numero: string): Promise<void> {
   await page.goto(`${BASE}/?tab=review`);
   let link = page.getByRole("link", { name: numero, exact: true });
   if (!(await link.count())) {

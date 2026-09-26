@@ -1,27 +1,25 @@
-// Fonte única da requisição de revisão enviada ao Claude.
+// Fonte única da requisição de revisão.
 // Usada pelo gerador de workflows do n8n (serializada no Code node) e pelo
 // runner de avaliação, garantindo que o que é avaliado é o que roda.
 
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { JsonSchema, ReviewItemInput, ReviewRequest } from "./types.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 export const PROMPT_VERSION = "personalisation-review.v2";
+/** Modelo pedido quando o provedor é a Messages API; o Codex usa CODEX_RUN_MODEL. */
 export const MODEL = "claude-opus-5";
 
-export const SYSTEM_PROMPT = readFileSync(join(root, "prompts", `${PROMPT_VERSION}.md`), "utf8").trim();
-export const OUTPUT_SCHEMA = JSON.parse(readFileSync(join(root, "prompts", "review-schema.json"), "utf8"));
+export const SYSTEM_PROMPT: string = readFileSync(join(root, "prompts", `${PROMPT_VERSION}.md`), "utf8").trim();
+export const OUTPUT_SCHEMA: JsonSchema = JSON.parse(readFileSync(join(root, "prompts", "review-schema.json"), "utf8"));
 
 /** Beta necessária para `fallbacks: "default"` (reexecução server-side em caso de recusa). */
 export const ANTHROPIC_BETA = "server-side-fallback-2026-07-01";
 
-/**
- * @param {{ title: string, charset: string | null, personalisation: Record<string,string>,
- *           checks: unknown, order_date: string }} item
- */
-export function buildReviewRequest(item) {
+export function buildReviewRequest(item: ReviewItemInput): ReviewRequest {
   const input = {
     product: item.title,
     technique: item.charset ?? "unknown",

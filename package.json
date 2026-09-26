@@ -6,24 +6,27 @@
     "node": ">=22.18"
   },
   "scripts": {
-    "setup": "node scripts/setup-local.mjs",
-    "test": "node --test lib/*.test.mjs && deno test supabase/functions/_shared/",
-    "workflows": "node scripts/gerar-workflows.mjs",
+    "setup": "node scripts/setup-local.ts",
+    "test": "npm run typecheck && node --test lib/*.test.ts && deno test supabase/functions/_shared/",
+    "workflows": "node scripts/gerar-workflows.ts",
     "n8n:up": "docker compose -f n8n/docker-compose.yml up -d",
-    "n8n:import": "node scripts/n8n-importar.mjs",
+    "n8n:import": "node scripts/n8n-importar.ts",
     "db:reset": "npx -y supabase@latest db reset",
     "functions:serve": "npx -y supabase@latest functions serve --env-file supabase/functions/.env --no-verify-jwt",
-    "simular": "node scripts/simular-webhook.mjs",
-    "eval": "node --env-file=.env scripts/eval.mjs",
-    "test:integration": "node --test tests/",
-    "seed:usuarios": "node scripts/seed-usuarios.mjs",
+    "simular": "node scripts/simular-webhook.ts",
+    "eval": "node --env-file=.env scripts/eval.ts",
+    "test:integration": "node --test tests/*.test.ts",
+    "seed:usuarios": "node scripts/seed-usuarios.ts",
     "web": "npm run dev --prefix web",
-    "gateway": "node --env-file=.env services/llm-gateway.mjs"
+    "gateway": "node --env-file=.env services/llm-gateway.ts",
+    "typecheck": "tsc -p tsconfig.json && deno check --node-modules-dir=none supabase/functions/shopify-webhook/index.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0"
   },
   "devDependencies": {
-    "playwright": "^1.63.0"
+    "@types/node": "^26.6.3",
+    "playwright": "^1.63.0",
+    "typescript": "^7.0.2"
   }
 }

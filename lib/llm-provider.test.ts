@@ -1,11 +1,11 @@
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { achatar, lerStream, provedor, codexModelo, codexReserva } from "./llm-provider.mjs";
+import { achatar, lerStream, provedor, codexModelo, codexReserva } from "./llm-provider.ts";
 
 const ENV = { ...process.env };
 afterEach(() => { process.env = { ...ENV }; });
 
-const jsonl = (...eventos) => eventos.map((e) => JSON.stringify(e)).join("\n");
+const jsonl = (...eventos: object[]): string => eventos.map((e) => JSON.stringify(e)).join("\n");
 
 test("stream concluído devolve a mensagem do agente e o uso", () => {
   const r = lerStream(jsonl(
@@ -21,7 +21,7 @@ test("stream concluído devolve a mensagem do agente e o uso", () => {
 
 test("turn.failed é falha mesmo com exit 0", () => {
   const r = lerStream(jsonl({ type: "turn.failed", error: { message: "usage limit reached" } }));
-  assert.match(r.falha, /usage limit/);
+  assert.match(r.falha ?? "", /usage limit/);
 });
 
 test("error seguido de turn.completed é reconexão recuperada, não falha", () => {
@@ -35,7 +35,7 @@ test("error seguido de turn.completed é reconexão recuperada, não falha", () 
 
 test("error sem turno concluído é falha; linhas não-JSON são ignoradas", () => {
   const r = lerStream("aviso para humano\n" + jsonl({ type: "error", message: "stream disconnected" }));
-  assert.match(r.falha, /stream disconnected/);
+  assert.match(r.falha ?? "", /stream disconnected/);
   assert.equal(r.texto, "");
 });
 
