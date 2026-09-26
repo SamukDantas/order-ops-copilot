@@ -29,8 +29,9 @@ const set = (key, value) => {
 
 set("N8N_WEBHOOK_SECRET", randomBytes(24).toString("hex"));
 
+let status = null;
 try {
-  const status = JSON.parse(execSync("npx -y supabase@latest status -o json", { cwd: root, stdio: ["ignore", "pipe", "ignore"] }).toString());
+  status = JSON.parse(execSync("npx -y supabase@latest status -o json", { cwd: root, stdio: ["ignore", "pipe", "ignore"] }).toString());
   const secret = status.SECRET_KEY ?? status.SERVICE_ROLE_KEY;
   if (secret) set("SUPABASE_SECRET_KEY", secret);
 } catch {
@@ -47,6 +48,16 @@ writeFileSync(join(root, "supabase", "functions", ".env"), [
   `N8N_REVIEW_WEBHOOK_URL=http://host.docker.internal:5678/webhook/review-order`,
   `N8N_WEBHOOK_SECRET=${env.N8N_WEBHOOK_SECRET}`,
 ].join("\n") + "\n");
+
+// Dashboard: só a chave publicável (o RLS protege os dados)
+if (status) {
+  writeFileSync(join(root, "web", ".env.local"), [
+    `NEXT_PUBLIC_SUPABASE_URL=${status.API_URL}`,
+    `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${status.PUBLISHABLE_KEY ?? status.ANON_KEY}`,
+    `N8N_BASE_URL=http://localhost:5678`,
+    `N8N_WEBHOOK_SECRET=${env.N8N_WEBHOOK_SECRET}`,
+  ].join("\n") + "\n");
+}
 
 // Credenciais do n8n (IDs fixos referenciados pelos workflows gerados)
 const credsDir = join(root, "n8n", ".credentials");

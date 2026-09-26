@@ -16,7 +16,7 @@ services:
       N8N_HOST: localhost
       N8N_PORT: "5678"
       N8N_PROTOCOL: http
-      WEBHOOK_URL: http://localhost:5678/
+      N8N_WEBHOOK_URL: http://localhost:5678/
       N8N_DIAGNOSTICS_ENABLED: "false"
       N8N_RUNNERS_ENABLED: "true"
       # Os workflows leem SUPABASE_URL / SHOPIFY_MODE / N8N_BASE_URL de $env

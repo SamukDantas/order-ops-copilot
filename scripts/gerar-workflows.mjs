@@ -121,8 +121,8 @@ const revisarNodes = [
     position: pos(0, 1),
     parameters: { rule: { interval: [{ field: "minutes", minutesInterval: 5 }] } },
   },
-  code("Pedido do webhook", pos(1, 0), `return [{ json: { p_order_id: $json.body?.order_id ?? null } }];`, "runOnceForEachItem"),
-  code("Sweep de pendentes", pos(1, 1), `return [{ json: { p_order_id: null } }];`, "runOnceForEachItem"),
+  code("Pedido do webhook", pos(1, 0), `return { json: { p_order_id: $json.body?.order_id ?? null } };`, "runOnceForEachItem"),
+  code("Sweep de pendentes", pos(1, 1), `return { json: { p_order_id: null } };`, "runOnceForEachItem"),
   httpJson("Claim de pedidos", pos(2, 0), {
     url: `${SUPA}/rest/v1/rpc/claim_orders_for_review`,
     body: "={{ JSON.stringify({ p_order_id: $json.p_order_id }) }}",
@@ -176,7 +176,7 @@ $input.all().forEach(({ json: resp }, i) => {
 
   const result = parsed.ok
     ? { ...parsed.review, model: parsed.model ?? ctx.request.model }
-    : { verdict: "unavailable", issues: ["AI review unavailable (" + parsed.reason + "): review manually"],
+    : { verdict: "unavailable", issues: ["AI review unavailable: please review manually"],
         suggested_text: null, customer_message: null, confidence: 0, model: ctx.request.model };
   if (!parsed.ok) failures.push({ workflow: "Revisar pedido", node: "Claude: revisar item",
     order_id: ctx.order_id, message: parsed.reason, details: { order_item_id: ctx.order_item_id } });
@@ -262,13 +262,13 @@ for (const item of o.order_items ?? []) {
 const note = "[Order Ops Copilot] " + (o.status === "auto_approved" ? "Personalisation auto-approved." : "Reviewed by operations.")
   + (lines.length ? "\\n" + lines.join("\\n") : "");
 
-return [{ json: {
+return { json: {
   order_id: o.id,
   shop_domain: o.brands.shop_domain,
   order_gid: "gid://shopify/Order/" + o.shopify_order_id,
   tags, note,
   mode: $env.SHOPIFY_MODE === "live" ? "live" : "mock",
-}}];`, "runOnceForEachItem"),
+}};`, "runOnceForEachItem"),
   ifNode("Shopify em modo live?", pos(3), "={{ $json.mode }}", "live"),
   httpJson("Shopify: tags + nota", pos(4, -0.5), {
     url: "=https://{{ $json.shop_domain }}/admin/api/2026-07/graphql.json",
@@ -280,10 +280,10 @@ return [{ json: {
     creds: { httpHeaderAuth: CRED.shopify },
     extra: { retryOnFail: true, maxTries: 3, waitBetweenTries: 3000 },
   }),
-  code("Simular Shopify (mock)", pos(4, 0.5), `return [{ json: { data: { tagsAdd: { userErrors: [] }, orderUpdate: { userErrors: [] } }, mock: true } }];`, "runOnceForEachItem"),
+  code("Simular Shopify (mock)", pos(4, 0.5), `return { json: { data: { tagsAdd: { userErrors: [] }, orderUpdate: { userErrors: [] } }, mock: true } };`, "runOnceForEachItem"),
   code("Resultado do write-back", pos(5), `const ctx = $("Montar tags e nota").item.json;
 const errors = [...($json.data?.tagsAdd?.userErrors ?? []), ...($json.data?.orderUpdate?.userErrors ?? []), ...($json.errors ?? [])];
-return [{ json: { order_id: ctx.order_id, mode: ctx.mode, tags: ctx.tags, note: ctx.note, ok: errors.length === 0, response: $json } }];`, "runOnceForEachItem"),
+return { json: { order_id: ctx.order_id, mode: ctx.mode, tags: ctx.tags, note: ctx.note, ok: errors.length === 0, response: $json } };`, "runOnceForEachItem"),
   httpJson("Registrar sync", pos(6), {
     url: `${SUPA}/rest/v1/shopify_sync_log`,
     body: "={{ JSON.stringify($json) }}",

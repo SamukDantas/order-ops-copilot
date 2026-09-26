@@ -134,7 +134,11 @@ function ItemCard({ item, orderId, canDecide }: { item: OrderItem; orderId: stri
             <input type="hidden" name="review_id" value={review.id} />
             <input name="note" placeholder="Note (optional)" className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm" />
             <div className="flex flex-wrap gap-2">
-              <button name="action" value="approve" className="rounded-md border border-ok/50 px-3 py-1.5 text-sm text-ok">Approve as typed</button>
+              {item.checks?.passed !== false ? (
+                <button name="action" value="approve" className="rounded-md border border-ok/50 px-3 py-1.5 text-sm text-ok">Approve as typed</button>
+              ) : (
+                <p className="w-full text-xs text-muted">The text breaks this product&apos;s rules, so it can only be approved after an edit.</p>
+              )}
               <button name="action" value="reject" className="rounded-md border border-bad/50 px-3 py-1.5 text-sm text-bad">Put on hold</button>
             </div>
           </form>
