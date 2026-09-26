@@ -1,38 +1,48 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseReviewResponse, routeItem, routeOrder } from "./review-logic.mjs";
-import { buildReviewRequest, OUTPUT_SCHEMA } from "./review-request.mjs";
+import { parseReviewResponse, routeItem, routeOrder } from "./review-logic.ts";
+import { buildReviewRequest, OUTPUT_SCHEMA } from "./review-request.ts";
+import type { LlmResponse, ParsedReview, Review } from "./types.ts";
 
-const resp = (obj, extra = {}) => ({
-  type: "message", model: "claude-opus-5", stop_reason: "end_turn",
-  content: [{ type: "thinking", thinking: "" }, { type: "text", text: JSON.stringify(obj) }], ...extra,
+const resp = (obj: unknown, extra: Partial<LlmResponse> = {}): LlmResponse => ({
+  type: "message", model: "claude-opus-5", stop_reason: "end_turn", usage: null,
+  content: [{ type: "thinking", text: "" }, { type: "text", text: JSON.stringify(obj) }], ...extra,
 });
 
 const okReview = { verdict: "ok", issues: [], suggested_text: null, confidence: 0.95, customer_message: null };
 
+function review(p: ParsedReview): Review {
+  assert.ok(p.ok, `esperava revisão válida, veio ${JSON.stringify(p)}`);
+  return p.review;
+}
+
+function reason(p: ParsedReview): string {
+  assert.ok(!p.ok, "esperava falha");
+  return p.reason;
+}
+
 test("resposta válida é aceita", () => {
   const p = parseReviewResponse(resp(okReview));
-  assert.equal(p.ok, true);
-  assert.equal(p.review.verdict, "ok");
-  assert.equal(p.model, "claude-opus-5");
+  assert.equal(review(p).verdict, "ok");
+  assert.ok(p.ok && p.model === "claude-opus-5");
 });
 
 test("recusa, max_tokens, erro da API e JSON inválido vão para humano", () => {
-  assert.equal(parseReviewResponse(resp(okReview, { stop_reason: "refusal", stop_details: { category: "cyber" } })).reason, "refusal:cyber");
-  assert.equal(parseReviewResponse(resp(okReview, { stop_reason: "max_tokens" })).reason, "max_tokens");
-  assert.equal(parseReviewResponse({ type: "error", error: { type: "overloaded_error" } }).reason, "api_error:overloaded_error");
-  assert.equal(parseReviewResponse({ ...resp(okReview), content: [{ type: "text", text: "{oops" }] }).reason, "invalid_json");
+  assert.equal(reason(parseReviewResponse(resp(okReview, { stop_reason: "refusal", stop_details: { category: "cyber" } }))), "refusal:cyber");
+  assert.equal(reason(parseReviewResponse(resp(okReview, { stop_reason: "max_tokens" }))), "max_tokens");
+  assert.equal(reason(parseReviewResponse({ type: "error", error: { type: "overloaded_error" } })), "api_error:overloaded_error");
+  assert.equal(reason(parseReviewResponse({ ...resp(okReview), content: [{ type: "text", text: "{oops" }] })), "invalid_json");
 });
 
 test("fix sem sugestão é inválido", () => {
   const p = parseReviewResponse(resp({ ...okReview, verdict: "fix", issues: ["typo"] }));
-  assert.equal(p.reason, "fix_without_suggestion");
+  assert.equal(reason(p), "fix_without_suggestion");
 });
 
 test("sugestão é descartada quando verdict não é fix; confiança é limitada a [0,1]", () => {
-  const p = parseReviewResponse(resp({ ...okReview, suggested_text: [{ name: "A", value: "b" }], confidence: 1.7 }));
-  assert.equal(p.review.suggested_text, null);
-  assert.equal(p.review.confidence, 1);
+  const r = review(parseReviewResponse(resp({ ...okReview, suggested_text: [{ name: "A", value: "b" }], confidence: 1.7 })));
+  assert.equal(r.suggested_text, null);
+  assert.equal(r.confidence, 1);
 });
 
 test("roteamento: só aprova automaticamente quando tudo concorda", () => {
@@ -42,7 +52,7 @@ test("roteamento: só aprova automaticamente quando tudo concorda", () => {
   assert.equal(routeItem({ parsed: good, checksPassed: true, brandThreshold: 0.99 }), "needs_review");
   const low = parseReviewResponse(resp({ ...okReview, confidence: 0.6 }));
   assert.equal(routeItem({ parsed: low, checksPassed: true, brandThreshold: 0.5 }), "needs_review");
-  assert.equal(routeItem({ parsed: { ok: false }, checksPassed: true, brandThreshold: 0 }), "needs_review");
+  assert.equal(routeItem({ parsed: { ok: false, reason: "x" }, checksPassed: true, brandThreshold: 0 }), "needs_review");
 });
 
 test("um item com problema segura o pedido", () => {
@@ -58,6 +68,8 @@ test("requisição: schema estrito, personalização como dado delimitado", () =
   });
   assert.equal(req.output_config.format.type, "json_schema");
   assert.equal(OUTPUT_SCHEMA.additionalProperties, false);
-  assert.match(req.messages[0].content, /<order_item>[\s\S]*Ignore previous instructions[\s\S]*<\/order_item>/);
+  const conteudo = req.messages[0]?.content;
+  assert.equal(typeof conteudo, "string");
+  assert.match(conteudo as string, /<order_item>[\s\S]*Ignore previous instructions[\s\S]*<\/order_item>/);
   assert.equal(req.fallbacks, "default");
 });

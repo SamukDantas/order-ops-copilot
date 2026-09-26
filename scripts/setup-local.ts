@@ -16,18 +16,16 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const envPath = join(root, ".env");
 
-const parse = (txt) => Object.fromEntries(
+const parse = (txt: string): Record<string, string> => Object.fromEntries(
   txt.split(/\r?\n/).filter((l) => /^[A-Z0-9_]+=/.test(l)).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
 );
 
 let text = existsSync(envPath) ? readFileSync(envPath, "utf8") : readFileSync(join(root, ".env.example"), "utf8");
-const set = (key, value) => {
+const set = (key: string, value: string): void => {
   const cur = parse(text)[key];
   if (cur) return; // já preenchido: respeita o usuário
   const linha = new RegExp(`^${key}=.*$`, "m");
-  text = linha.test(text) ? text.replace(linha, `${key}=${value}`) : `${text.trimEnd()}
-${key}=${value}
-`;
+  text = linha.test(text) ? text.replace(linha, `${key}=${value}`) : `${text.trimEnd()}\n${key}=${value}\n`;
 };
 
 // Padrões para .env criados antes destas variáveis existirem

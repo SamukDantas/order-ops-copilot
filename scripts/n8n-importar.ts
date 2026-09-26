@@ -7,13 +7,14 @@ import { execSync } from "node:child_process";
 const C = "order-ops-n8n";
 const WORKFLOWS = ["ooTratarErros001", "ooAplicarDecisa1", "ooRevisarPedido1"];
 
-const run = (cmd, { tolerate = false } = {}) => {
+const run = (cmd: string, { tolerate = false } = {}): boolean => {
   try {
     const out = execSync(`docker exec ${C} ${cmd}`, { stdio: ["ignore", "pipe", "pipe"] }).toString().trim();
     if (out) console.log(out.split("\n").slice(-3).join("\n"));
     return true;
   } catch (e) {
-    if (!tolerate) throw new Error(`${cmd}\n${e.stderr?.toString() ?? e.message}`);
+    const detalhe = (e as { stderr?: Buffer }).stderr?.toString() ?? (e instanceof Error ? e.message : String(e));
+    if (!tolerate) throw new Error(`${cmd}\n${detalhe}`);
     return false;
   }
 };

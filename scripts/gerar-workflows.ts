@@ -3,12 +3,58 @@
 // o prompt, o schema e a lógica de roteamento vêm de lib/ e prompts/, então o
 // workflow que roda é sempre o mesmo que os testes e o eval exercitam.
 //
-// Uso: node scripts/gerar-workflows.mjs
+// Uso: node scripts/gerar-workflows.ts
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SYSTEM_PROMPT, OUTPUT_SCHEMA, MODEL, PROMPT_VERSION, buildReviewRequest } from "../lib/review-request.mjs";
+import { SYSTEM_PROMPT, OUTPUT_SCHEMA, MODEL, PROMPT_VERSION, buildReviewRequest } from "../lib/review-request.ts";
+
+// ─── Formato dos workflows do n8n (o subconjunto que geramos) ─────────
+type Position = [number, number];
+interface Credential { id: string; name: string }
+interface N8nNode {
+  id: string;
+  name: string;
+  type: string;
+  typeVersion: number;
+  position: Position;
+  parameters: Record<string, unknown>;
+  webhookId?: string;
+  credentials?: Record<string, Credential>;
+  retryOnFail?: boolean;
+  maxTries?: number;
+  waitBetweenTries?: number;
+  onError?: "continueRegularOutput" | "stopWorkflow";
+}
+interface Connection { node: string; type: "main"; index: number }
+type Connections = Record<string, { main: Connection[][] }>;
+interface Workflow {
+  id: string;
+  name: string;
+  active: boolean;
+  nodes: N8nNode[];
+  connections: Connections;
+  settings: { executionOrder: "v1"; errorWorkflow?: string };
+  pinData: Record<string, never>;
+  tags: string[];
+}
+interface Header { name: string; value: string }
+type CodeMode = "runOnceForAllItems" | "runOnceForEachItem";
+
+/**
+ * O Code node do n8n roda JavaScript: o TypeScript de lib/ entra sem tipos.
+ * O Node troca cada tipo por espaços para preservar posições; aqui os espaços
+ * são normalizados para o JSON gerado continuar legível.
+ */
+function paraJs(ts: string): string {
+  return ts
+    .replace(/(\S) {2,}/g, "$1 ")
+    .replace(/(\S) +([;),])/g, "$1$2")
+    .replace(/[ \t]+$/gm, "")
+    .replace(/\n{3,}/g, "\n\n");
+}
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = join(root, "n8n", "workflows");
@@ -23,17 +69,19 @@ const CRED = {
   shopify: { id: "ooCredShopify001", name: "Shopify Admin API" },
 };
 
-// Lógica pura reaproveitada no Code node (remove os "export")
-const reviewLogicSrc = readFileSync(join(root, "lib", "review-logic.mjs"), "utf8").replace(/^export /gm, "");
-const buildRequestSrc = `const SYSTEM_PROMPT = ${JSON.stringify(SYSTEM_PROMPT)};
+// Lógica pura reaproveitada no Code node: sem tipos e sem "export"
+const reviewLogicSrc = paraJs(
+  stripTypeScriptTypes(readFileSync(join(root, "lib", "review-logic.ts"), "utf8")).replace(/^export /gm, ""),
+);
+// buildReviewRequest já chega sem tipos: o Node os removeu ao carregar o módulo
+const buildRequestSrc = paraJs(`const SYSTEM_PROMPT = ${JSON.stringify(SYSTEM_PROMPT)};
 const OUTPUT_SCHEMA = ${JSON.stringify(OUTPUT_SCHEMA)};
 const MODEL = ${JSON.stringify(MODEL)};
 const PROMPT_VERSION = ${JSON.stringify(PROMPT_VERSION)};
-${buildReviewRequest.toString().replace(/^function /, "function ")}`;
+${buildReviewRequest.toString()}`);
 
 // ─── Helpers de nós ──────────────────────────────────────────────────
-let y = 0;
-const pos = (col, row = 0) => [col * 260, 300 + row * 200 + y];
+const pos = (col: number, row = 0): Position => [col * 260, 300 + row * 200];
 
 const supabaseAuth = {
   authentication: "genericCredentialType",
@@ -41,7 +89,18 @@ const supabaseAuth = {
 };
 const supabaseCreds = { httpCustomAuth: CRED.supabase };
 
-function httpJson(name, position, { method = "POST", url, body, headers = [], auth, creds, extra = {}, options = {} }) {
+interface HttpOptions {
+  method?: "GET" | "POST" | "PATCH";
+  url: string;
+  body?: string;
+  headers?: Header[];
+  auth?: Record<string, string>;
+  creds?: Record<string, Credential>;
+  extra?: Partial<N8nNode>;
+  options?: Record<string, unknown>;
+}
+
+function httpJson(name: string, position: Position, { method = "POST", url, body, headers = [], auth, creds, extra = {}, options = {} }: HttpOptions): N8nNode {
   return {
     id: slug(name), name, type: "n8n-nodes-base.httpRequest", typeVersion: 4.2, position,
     parameters: {
@@ -57,14 +116,14 @@ function httpJson(name, position, { method = "POST", url, body, headers = [], au
   };
 }
 
-function code(name, position, jsCode, mode = "runOnceForAllItems") {
+function code(name: string, position: Position, jsCode: string, mode: CodeMode = "runOnceForAllItems"): N8nNode {
   return {
     id: slug(name), name, type: "n8n-nodes-base.code", typeVersion: 2, position,
     parameters: { mode, jsCode },
   };
 }
 
-function webhook(name, position, path, webhookId) {
+function webhook(name: string, position: Position, path: string, webhookId: string): N8nNode {
   return {
     id: slug(name), name, type: "n8n-nodes-base.webhook", typeVersion: 2, position, webhookId,
     parameters: {
@@ -75,7 +134,7 @@ function webhook(name, position, path, webhookId) {
   };
 }
 
-function ifNode(name, position, leftValue, rightValue) {
+function ifNode(name: string, position: Position, leftValue: string, rightValue: string): N8nNode {
   return {
     id: slug(name), name, type: "n8n-nodes-base.if", typeVersion: 2, position,
     parameters: {
@@ -89,21 +148,24 @@ function ifNode(name, position, leftValue, rightValue) {
   };
 }
 
-function slug(s) {
+function slug(s: string): string {
   return s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
-function connect(pairs) {
-  const c = {};
+type Ligacao = [from: string, to: string, outIndex?: number];
+
+function connect(pairs: Ligacao[]): Connections {
+  const c: Connections = {};
   for (const [from, to, outIndex = 0] of pairs) {
-    c[from] ??= { main: [] };
-    while (c[from].main.length <= outIndex) c[from].main.push([]);
-    c[from].main[outIndex].push({ node: to, type: "main", index: 0 });
+    const saidas = (c[from] ??= { main: [] }).main;
+    while (saidas.length <= outIndex) saidas.push([]);
+    saidas[outIndex]?.push({ node: to, type: "main", index: 0 });
   }
   return c;
 }
 
-function workflow(id, name, nodes, connections, { errorWorkflow = WF.erros } = {}) {
+function workflow(id: string, name: string, nodes: N8nNode[], connections: Connections,
+  { errorWorkflow = WF.erros }: { errorWorkflow?: string | null } = {}): Workflow {
   return {
     id, name, active: false, nodes, connections,
     settings: { executionOrder: "v1", ...(errorWorkflow && id !== WF.erros ? { errorWorkflow } : {}) },
@@ -148,7 +210,7 @@ for (const { json: order } of $input.all()) {
   }
 }
 return out;`),
-  // O provedor (Codex CLI ou Messages API) fica atrás do gateway no host: ver services/llm-gateway.mjs
+  // O provedor (Codex CLI ou Messages API) fica atrás do gateway no host: ver services/llm-gateway.ts
   httpJson("LLM: revisar item", pos(4, 0), {
     url: "={{ $env.LLM_GATEWAY_URL }}/v1/messages",
     body: "={{ JSON.stringify($json.request) }}",
@@ -318,7 +380,12 @@ const errosNodes = [
 ];
 const erros = workflow(WF.erros, "Tratar erros", errosNodes, connect([["Falha em workflow", "Registrar erro"]]), { errorWorkflow: null });
 
-for (const [file, wf] of [["01-revisar-pedido.json", revisar], ["02-aplicar-decisao.json", aplicar], ["03-tratar-erros.json", erros]]) {
+const saidas: [arquivo: string, wf: Workflow][] = [
+  ["01-revisar-pedido.json", revisar],
+  ["02-aplicar-decisao.json", aplicar],
+  ["03-tratar-erros.json", erros],
+];
+for (const [file, wf] of saidas) {
   writeFileSync(join(outDir, file), JSON.stringify(wf, null, 2) + "\n");
   console.log(`n8n/workflows/${file}  (${wf.nodes.length} nós)`);
 }

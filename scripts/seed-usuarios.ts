@@ -8,7 +8,7 @@
 
 import { execSync } from "node:child_process";
 
-import { DEMO_PASSWORD } from "./demo-config.mjs";
+import { DEMO_PASSWORD } from "./demo-config.ts";
 
 const status = JSON.parse(execSync("npx -y supabase@latest status -o json", { stdio: ["ignore", "pipe", "ignore"] }).toString());
 const url = status.API_URL;
@@ -25,9 +25,11 @@ const USERS = [
 
 const headers = { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json" };
 
-async function findUser(email) {
+interface AuthUser { id: string; email?: string }
+
+async function findUser(email: string): Promise<AuthUser | undefined> {
   const res = await fetch(`${url}/auth/v1/admin/users?per_page=200`, { headers });
-  const { users } = await res.json();
+  const { users } = (await res.json()) as { users: AuthUser[] };
   return users.find((u) => u.email === email);
 }
 
@@ -38,14 +40,16 @@ for (const u of USERS) {
       method: "POST", headers,
       body: JSON.stringify({ email: u.email, password: DEMO_PASSWORD, email_confirm: true }),
     });
-    user = await res.json();
-    if (!res.ok) throw new Error(`${u.email}: ${JSON.stringify(user)}`);
+    const criado = (await res.json()) as AuthUser;
+    if (!res.ok) throw new Error(`${u.email}: ${JSON.stringify(criado)}`);
+    user = criado;
   }
-  const rows = u.memberships.map(([brand_id, role]) => ({ brand_id, user_id: user.id, role }));
+  const userId = user.id;
+  const rows = u.memberships.map(([brand_id, role]) => ({ brand_id, user_id: userId, role }));
   const res = await fetch(`${url}/rest/v1/brand_members?on_conflict=brand_id,user_id`, {
     method: "POST", headers: { ...headers, Prefer: "resolution=merge-duplicates" }, body: JSON.stringify(rows),
   });
   if (!res.ok) throw new Error(`${u.email}: ${await res.text()}`);
   console.log(`✓ ${u.email.padEnd(20)} ${u.memberships.map(([, r]) => r).join(", ")}`);
 }
-console.log("Senha (somente local): veja scripts/demo-config.mjs");
+console.log("Senha (somente local): veja scripts/demo-config.ts");

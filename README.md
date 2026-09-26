@@ -155,8 +155,8 @@ stateDiagram-v2
 | **Deterministic checks** (`supabase/functions/_shared/checks.ts`) | Per-product character limit (counted in code points), allowed charset per technique, emoji detection including variation selectors and ZWJ sequences, whitespace, and text addressed to the reviewer or system. A failed check can never be auto-approved. |
 | **Prompt** (`prompts/personalisation-review.v2.md`) | Verdict `ok`, `fix` or `reject`, specific issues, a suggested correction for every field, confidence, and a draft customer message in British English. Personalisation is delimited as data and declared unable to change the task. |
 | **Output contract** (`prompts/review-schema.json`) | Strict JSON schema, enforced by the provider (`--output-schema` on Codex, structured outputs on Claude) and validated again in the workflow. |
-| **Routing** (`lib/review-logic.mjs`) | Auto-approve only when checks passed, the verdict is `ok` and confidence meets the brand's threshold. One flagged item holds the whole order. |
-| **Provider** (`lib/llm-provider.mjs`) | `codex` (default): `codex exec` headless with a read-only sandbox in an empty temp dir, machine config and rules ignored, ephemeral, JSONL where `turn.failed` is a failure even on exit 0, and a fallback model on plan or limit refusals. Default model `gpt-5.6-luna` (short, high-volume task), fallback `gpt-5.6-terra`. `anthropic`: Claude Messages API via the official SDK. |
+| **Routing** (`lib/review-logic.ts`) | Auto-approve only when checks passed, the verdict is `ok` and confidence meets the brand's threshold. One flagged item holds the whole order. |
+| **Provider** (`lib/llm-provider.ts`) | `codex` (default): `codex exec` headless with a read-only sandbox in an empty temp dir, machine config and rules ignored, ephemeral, JSONL where `turn.failed` is a failure even on exit 0, and a fallback model on plan or limit refusals. Default model `gpt-5.6-luna` (short, high-volume task), fallback `gpt-5.6-terra`. `anthropic`: Claude Messages API via the official SDK. |
 
 **Evaluation.** `npm run eval` runs the labelled set through the same request and provider as production and reports exact accuracy, flag precision and recall, and the routed metrics that matter operationally: **unsafe auto-approvals** (must be 0) and unneeded human reviews.
 
@@ -178,11 +178,12 @@ Details in [docs/EVALS.md](docs/EVALS.md).
 
 ## Tech stack
 
+**Language:** TypeScript end to end, in strict mode (`noUncheckedIndexedAccess`, `erasableSyntaxOnly`). Node 24 runs it natively through type stripping, with no build step. The n8n Code nodes get the same logic with its types removed at generation time.
 **Data and backend:** Supabase (Postgres, Row Level Security, Auth, Edge Functions on Deno)
 **Orchestration:** n8n 2.x (Docker), workflows generated from code
-**AI:** Codex CLI (`gpt-5.6-luna`) or Claude Messages API, behind a small Node gateway
+**AI:** Codex CLI (`gpt-5.6-luna`) or Claude Messages API, behind a small typed gateway (Node + TypeScript)
 **Frontend:** Next.js 16 (App Router, Server Actions, `proxy.ts`), React 19, Tailwind CSS 4
-**Testing:** Deno test, Node test runner, RLS integration tests against local Supabase, LLM evaluation set, Playwright for screenshots
+**Testing:** `tsc` strict + `deno check`, Deno test, Node test runner, RLS integration tests against local Supabase, LLM evaluation set, Playwright for screenshots
 
 ## Running locally
 
@@ -200,11 +201,12 @@ npm run web                 # dashboard on http://localhost:3000
 npm run simular -- all      # send the sample Shopify orders
 ```
 
-Demo users: `ops@demo.test` (admin, both brands), `reviewer@demo.test` (reviewer, Engrave & Co), `viewer@demo.test` (read-only, Little Stitch). The local-only password is in `scripts/demo-config.mjs`.
+Demo users: `ops@demo.test` (admin, both brands), `reviewer@demo.test` (reviewer, Engrave & Co), `viewer@demo.test` (read-only, Little Stitch). The local-only password is in `scripts/demo-config.ts`.
 
 | Command | Purpose |
 |---|---|
-| `npm test` | Unit tests (Node + Deno) |
+| `npm test` | Typecheck (`tsc` + `deno check`) and unit tests (Node + Deno) |
+| `npm run typecheck` | Typecheck only |
 | `npm run test:integration` | RLS and decision rules against local Supabase |
 | `npm run eval` | Prompt evaluation (one real LLM call per case) |
 | `npm run workflows` | Regenerate `n8n/workflows/` from `lib/` and `prompts/` |

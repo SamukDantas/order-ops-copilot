@@ -9,32 +9,39 @@
 // - `anthropic`: Messages API pelo SDK oficial (exige ANTHROPIC_API_KEY com crédito).
 //
 // Os dois devolvem o mesmo formato mínimo, no molde da Messages API
-// ({ type, model, stop_reason, content: [{type:"text", text}], usage }), que é o
-// contrato que parseReviewResponse() já entende. Quem consome não sabe qual
-// provedor respondeu, a não ser pelo campo `model`.
+// (LlmResponse), que é o contrato que parseReviewResponse() já entende. Quem
+// consome não sabe qual provedor respondeu, a não ser pelo campo `model`.
 
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import type { ContentBlock, LlmResponse, ReviewRequest } from "./types.ts";
 
-export const PROVEDORES = ["codex", "anthropic"];
+export const PROVEDORES = ["codex", "anthropic"] as const;
+export type Provedor = (typeof PROVEDORES)[number];
 
-export function provedor() {
+export function provedor(): Provedor {
   const valor = (process.env.LLM_PROVEDOR || "codex").trim().toLowerCase();
-  if (!PROVEDORES.includes(valor)) throw new Error(`LLM_PROVEDOR inválido: '${valor}'. Use ${PROVEDORES.join(" ou ")}.`);
-  return valor;
+  if (!(PROVEDORES as readonly string[]).includes(valor)) {
+    throw new Error(`LLM_PROVEDOR inválido: '${valor}'. Use ${PROVEDORES.join(" ou ")}.`);
+  }
+  return valor as Provedor;
 }
 
-export async function completar(request) {
+export async function completar(request: ReviewRequest): Promise<LlmResponse> {
   return provedor() === "anthropic" ? viaAnthropic(request) : viaCodex(request);
 }
 
 // ─── Anthropic ───────────────────────────────────────────────────────
-async function viaAnthropic(request) {
+async function viaAnthropic(request: ReviewRequest): Promise<LlmResponse> {
   const { default: Anthropic } = await import("@anthropic-ai/sdk");
-  const { ANTHROPIC_BETA } = await import("./review-request.mjs");
-  return new Anthropic().beta.messages.create({ ...request, betas: [ANTHROPIC_BETA] });
+  const { ANTHROPIC_BETA } = await import("./review-request.ts");
+  const client = new Anthropic();
+  // `fallbacks` e o formato do schema são mais novos que as tipagens do SDK: o
+  // corpo segue o contrato da API, e a resposta é lida pelo contrato interno.
+  const params = { ...request, betas: [ANTHROPIC_BETA] } as unknown as Parameters<typeof client.beta.messages.create>[0];
+  return (await client.beta.messages.create(params)) as unknown as LlmResponse;
 }
 
 // ─── Codex ───────────────────────────────────────────────────────────
@@ -56,11 +63,11 @@ const RECUSAS_DO_MODELO = [
   "model is not available", "capacity",
 ];
 
-export function codexModelo() {
+export function codexModelo(): string {
   return (process.env.CODEX_RUN_MODEL || "").trim() || CODEX_MODELO_PADRAO;
 }
 
-export function codexReserva() {
+export function codexReserva(): string | null {
   const valor = process.env.CODEX_FALLBACK_MODEL;
   const reserva = valor === undefined ? CODEX_RESERVA_PADRAO : valor.trim();
   if (!reserva || reserva.toLowerCase() === "nenhum" || reserva === codexModelo()) return null;
@@ -68,29 +75,49 @@ export function codexReserva() {
 }
 
 /** Mensagens viram um texto só, com o papel marcado (o Codex recebe um pedido, não uma conversa). */
-export function achatar(request) {
-  const partes = [`[SYSTEM]\n${request.system}`];
+export function achatar(request: Pick<ReviewRequest, "system" | "messages">): string {
+  const partes: string[] = [`[SYSTEM]\n${request.system}`];
   for (const m of request.messages) {
     const conteudo = typeof m.content === "string"
       ? m.content
-      : m.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
+      : m.content.filter((c: ContentBlock) => c.type === "text").map((c: ContentBlock) => c.text ?? "").join("\n");
     partes.push(`[${m.role.toUpperCase()}]\n${conteudo}`);
   }
   return partes.join("\n\n");
 }
 
+interface CodexUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+}
+
+/** Eventos do JSONL do `codex exec --json` que interessam; o resto é ignorado. */
+interface EventoCodex {
+  type?: string;
+  message?: string;
+  item?: { type?: string; text?: string };
+  error?: { message?: string };
+  usage?: CodexUsage;
+}
+
+export interface StreamCodex {
+  texto: string;
+  usage: CodexUsage | null;
+  falha: string | null;
+}
+
 /** Lê o JSONL do `codex exec --json`: mensagens do agente, uso e motivo de falha. */
-export function lerStream(saida) {
-  const mensagens = [];
-  const falhas = [];
-  const avisos = [];
+export function lerStream(saida: string): StreamCodex {
+  const mensagens: string[] = [];
+  const falhas: string[] = [];
+  const avisos: string[] = [];
   let concluiu = false;
-  let usage = null;
+  let usage: CodexUsage | null = null;
   for (const bruta of saida.split(/\r?\n/)) {
     const linha = bruta.trim();
     if (!linha.startsWith("{")) continue;
-    let ev;
-    try { ev = JSON.parse(linha); } catch { continue; }
+    let ev: EventoCodex;
+    try { ev = JSON.parse(linha) as EventoCodex; } catch { continue; }
     if (ev.type === "item.completed" && ev.item?.type === "agent_message") mensagens.push(String(ev.item.text ?? "").trim());
     else if (ev.type === "turn.failed") falhas.push(String(ev.error?.message ?? "turn.failed"));
     else if (ev.type === "error") avisos.push(String(ev.message ?? "error"));
@@ -101,7 +128,7 @@ export function lerStream(saida) {
   return { texto: mensagens.filter(Boolean).join("\n"), usage, falha: motivos.join("; ").slice(0, 500) || null };
 }
 
-function argumentos(dir, schemaPath, modelo) {
+function argumentos(dir: string, schemaPath: string, modelo: string): string[] {
   const args = [
     "exec", "--cd", dir, "--sandbox", "read-only", "--skip-git-repo-check",
     "--ephemeral", "--ignore-user-config", "--ignore-rules", "--json",
@@ -119,23 +146,23 @@ function argumentos(dir, schemaPath, modelo) {
  * passar por `cmd.exe` quebra o prompt nos espaços; rodar o codex.js do pacote
  * com o próprio Node evita o shell (e as regras de aspas dele) por completo.
  */
-function comandoCodex() {
+function comandoCodex(): { cmd: string; pre: string[] } {
   if (process.env.CODEX_BIN) return { cmd: process.env.CODEX_BIN, pre: [] };
   if (process.platform !== "win32") return { cmd: "codex", pre: [] };
-  const onde = execFileSync("where.exe", ["codex.cmd"], { encoding: "utf8" }).split(/\r?\n/)[0].trim();
+  const onde = execFileSync("where.exe", ["codex.cmd"], { encoding: "utf8" }).split(/\r?\n/)[0]?.trim() ?? "";
   const js = join(dirname(onde), "node_modules", "@openai", "codex", "bin", "codex.js");
   if (!existsSync(js)) throw new Error(`Codex CLI não encontrado em ${js}. Instale com npm i -g @openai/codex.`);
   return { cmd: process.execPath, pre: [js] };
 }
 
-function rodarCodex(args, entrada, timeoutMs) {
+function rodarCodex(args: string[], entrada: string, timeoutMs: number): Promise<string> {
   return new Promise((resolve, reject) => {
     const { cmd, pre } = comandoCodex();
     const proc = spawn(cmd, [...pre, ...args], { windowsHide: true });
     let saida = "";
     const timer = setTimeout(() => { proc.kill(); reject(new Error(`Codex CLI excedeu ${timeoutMs / 1000}s`)); }, timeoutMs);
-    proc.stdout.on("data", (d) => { saida += d; });
-    proc.stderr.on("data", (d) => { saida += d; });
+    proc.stdout.on("data", (d: Buffer) => { saida += d.toString("utf8"); });
+    proc.stderr.on("data", (d: Buffer) => { saida += d.toString("utf8"); });
     proc.on("error", (e) => { clearTimeout(timer); reject(new Error(`Codex CLI não executou: ${e.message}`)); });
     proc.on("close", (code) => {
       clearTimeout(timer);
@@ -146,7 +173,7 @@ function rodarCodex(args, entrada, timeoutMs) {
   });
 }
 
-async function viaCodex(request) {
+async function viaCodex(request: ReviewRequest): Promise<LlmResponse> {
   const schema = request.output_config?.format?.schema;
   if (!schema) throw new Error("request sem output_config.format.schema");
 
@@ -157,7 +184,7 @@ async function viaCodex(request) {
   const entrada = achatar(request);
   const timeoutMs = Number(process.env.TIMEOUT_LLM_MS || 180_000);
 
-  const tentar = async (modelo) => {
+  const tentar = async (modelo: string): Promise<LlmResponse> => {
     const saida = await rodarCodex(argumentos(vazio, schemaPath, modelo), entrada, timeoutMs);
     const { texto, usage, falha } = lerStream(saida);
     if (falha) throw new Error(`Codex CLI abortou com exit 0: ${falha}`);
@@ -177,9 +204,9 @@ async function viaCodex(request) {
       return await tentar(principal);
     } catch (e) {
       const reserva = codexReserva();
-      const motivo = String(e.message).toLowerCase();
-      if (!reserva || !RECUSAS_DO_MODELO.some((m) => motivo.includes(m))) throw e;
-      console.warn(`>>> ${principal} recusado (${String(e.message).slice(0, 160)}); seguindo com ${reserva}.`);
+      const mensagem = e instanceof Error ? e.message : String(e);
+      if (!reserva || !RECUSAS_DO_MODELO.some((m) => mensagem.toLowerCase().includes(m))) throw e;
+      console.warn(`>>> ${principal} recusado (${mensagem.slice(0, 160)}); seguindo com ${reserva}.`);
       return await tentar(reserva);
     }
   } finally {

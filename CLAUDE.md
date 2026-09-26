@@ -8,9 +8,9 @@ Revisão automática, com IA, da personalização de pedidos do Shopify, com rev
 - `supabase/functions/shopify-webhook/`: entrada dos webhooks (HMAC, idempotência, persistência)
 - `supabase/functions/_shared/`: verificações determinísticas e HMAC (Deno, testado com `deno test`)
 - `lib/`: requisição de revisão, lógica de roteamento e provedor de LLM. **Fonte única**: é injetada nos workflows do n8n
-- `services/llm-gateway.mjs`: porta entre o n8n (container) e o provedor no host. `LLM_PROVEDOR=codex` (padrão, Codex CLI com login ChatGPT, mesma metodologia do squad-engenharia) ou `anthropic`
+- `services/llm-gateway.ts`: porta entre o n8n (container) e o provedor no host. `LLM_PROVEDOR=codex` (padrão, Codex CLI com login ChatGPT, mesma metodologia do squad-engenharia) ou `anthropic`
 - `prompts/`: prompts versionados + schema de saída
-- `n8n/workflows/`: **gerado** por `npm run workflows`. Nunca edite o JSON à mão; edite `scripts/gerar-workflows.mjs` ou `lib/`
+- `n8n/workflows/`: **gerado** por `npm run workflows`. Nunca edite o JSON à mão; edite `scripts/gerar-workflows.ts` ou `lib/`
 - `evals/cases.json`: conjunto rotulado; `npm run eval` mede o prompt (uma chamada real por caso: cota do Codex ou crédito da API)
 - `fixtures/shopify/` + `npm run simular`: webhooks assinados para testar sem loja real
 
@@ -21,12 +21,14 @@ Revisão automática, com IA, da personalização de pedidos do Shopify, com rev
 - Na dúvida, o sistema manda para humano: qualquer falha de IA vira `needs_review`, nunca `auto_approved`.
 - Segredos só em `.env` / credenciais do n8n / secrets das Edge Functions. O browser nunca recebe `service_role`.
 - Tabelas novas: RLS habilitado na mesma migration, com policy por `is_brand_member`.
+- TypeScript estrito em todo o código (sem `.js`/`.mjs` novos, fora arquivos de config de ferramentas). Só sintaxe apagável (`erasableSyntaxOnly`): o Node roda os `.ts` direto, sem build. Dados vindos de rede/JSON entram como `unknown` e são validados antes de usar.
 - Commits em pt-BR; fluxo branch → PR → merge.
 
 ## Comandos
 
 ```bash
-npm test                 # unit (Node + Deno)
+npm test                 # typecheck (tsc + deno check) + unit (Node + Deno)
+npm run typecheck        # só o typecheck
 npm run workflows        # regenera n8n/workflows a partir de lib/ e prompts/
 npm run db:reset         # recria o banco local com migrations + seed
 npm run simular -- all   # envia todos os webhooks de exemplo

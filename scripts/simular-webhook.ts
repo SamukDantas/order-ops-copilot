@@ -2,7 +2,7 @@
 // Simula o Shopify enviando um webhook orders/create assinado com HMAC.
 //
 // Uso:
-//   node scripts/simular-webhook.mjs <fixture|all> [--novo-id] [--duplicar] [--hmac-invalido]
+//   node scripts/simular-webhook.ts <fixture|all> [--novo-id] [--duplicar] [--hmac-invalido]
 //
 //   --novo-id        gera um id de pedido novo (permite reenviar o mesmo cenário)
 //   --duplicar       envia duas vezes com o mesmo X-Shopify-Webhook-Id
@@ -25,7 +25,7 @@ if (!target) {
   console.error("Informe um fixture ou 'all':\n  " + readdirSync(dir).map((f) => f.replace(".json", "")).join("\n  "));
   process.exit(1);
 }
-const has = (f) => flags.includes(f);
+const has = (f: string): boolean => flags.includes(f);
 
 const files = target === "all"
   ? readdirSync(dir).filter((f) => f.endsWith(".json"))
