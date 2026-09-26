@@ -2,7 +2,9 @@
   "name": "order-ops-copilot",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22.18" },
+  "engines": {
+    "node": ">=22.18"
+  },
   "scripts": {
     "setup": "node scripts/setup-local.mjs",
     "test": "node --test lib/*.test.mjs && deno test supabase/functions/_shared/",
@@ -12,9 +14,16 @@
     "db:reset": "npx -y supabase@latest db reset",
     "functions:serve": "npx -y supabase@latest functions serve --env-file supabase/functions/.env --no-verify-jwt",
     "simular": "node scripts/simular-webhook.mjs",
-    "eval": "node scripts/eval.mjs"
+    "eval": "node --env-file=.env scripts/eval.mjs",
+    "test:integration": "node --test tests/",
+    "seed:usuarios": "node scripts/seed-usuarios.mjs",
+    "web": "npm run dev --prefix web",
+    "gateway": "node --env-file=.env services/llm-gateway.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
   }
 }

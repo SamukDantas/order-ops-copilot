@@ -52,7 +52,13 @@
             }
           ]
         },
-        "options": {}
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
       },
       "credentials": {
         "httpCustomAuth": {
@@ -72,7 +78,7 @@
       ],
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const o = $json;\nconst TAGS = {\n  auto_approved: [\"personalisation-ok\", \"ai-reviewed\"],\n  approved: [\"personalisation-ok\", \"human-reviewed\"],\n  rejected: [\"personalisation-hold\", \"human-reviewed\"],\n};\nconst tags = TAGS[o.status];\nif (!tags) throw new Error(\"Pedido \" + o.order_number + \" não está decidido (status: \" + o.status + \")\");\n\nconst lines = [];\nfor (const item of o.order_items ?? []) {\n  const review = (item.reviews ?? []).sort((a, b) => b.created_at.localeCompare(a.created_at))[0];\n  const decision = (review?.review_decisions ?? []).sort((a, b) => b.created_at.localeCompare(a.created_at))[0];\n  if (decision?.action === \"edit\") {\n    lines.push(item.title + \": produce as \" + decision.final_text.map((f) => f.name + ' = \"' + f.value + '\"').join(\", \"));\n  } else if (decision?.action === \"reject\") {\n    lines.push(item.title + \": ON HOLD, contact customer\");\n  }\n}\nconst note = \"[Order Ops Copilot] \" + (o.status === \"auto_approved\" ? \"Personalisation auto-approved.\" : \"Reviewed by operations.\")\n  + (lines.length ? \"\\n\" + lines.join(\"\\n\") : \"\");\n\nreturn [{ json: {\n  order_id: o.id,\n  shop_domain: o.brands.shop_domain,\n  order_gid: \"gid://shopify/Order/\" + o.shopify_order_id,\n  tags, note,\n  mode: $env.SHOPIFY_MODE === \"live\" ? \"live\" : \"mock\",\n}}];"
+        "jsCode": "const o = $json;\nconst TAGS = {\n  auto_approved: [\"personalisation-ok\", \"ai-reviewed\"],\n  approved: [\"personalisation-ok\", \"human-reviewed\"],\n  rejected: [\"personalisation-hold\", \"human-reviewed\"],\n};\nconst tags = TAGS[o.status];\nif (!tags) throw new Error(\"Pedido \" + o.order_number + \" não está decidido (status: \" + o.status + \")\");\n\nconst lines = [];\nfor (const item of o.order_items ?? []) {\n  const review = (item.reviews ?? []).sort((a, b) => b.created_at.localeCompare(a.created_at))[0];\n  const decision = (review?.review_decisions ?? []).sort((a, b) => b.created_at.localeCompare(a.created_at))[0];\n  if (decision?.action === \"edit\") {\n    lines.push(item.title + \": produce as \" + decision.final_text.map((f) => f.name + ' = \"' + f.value + '\"').join(\", \"));\n  } else if (decision?.action === \"reject\") {\n    lines.push(item.title + \": ON HOLD, contact customer\");\n  }\n}\nconst note = \"[Order Ops Copilot] \" + (o.status === \"auto_approved\" ? \"Personalisation auto-approved.\" : \"Reviewed by operations.\")\n  + (lines.length ? \"\\n\" + lines.join(\"\\n\") : \"\");\n\nreturn { json: {\n  order_id: o.id,\n  shop_domain: o.brands.shop_domain,\n  order_gid: \"gid://shopify/Order/\" + o.shopify_order_id,\n  tags, note,\n  mode: $env.SHOPIFY_MODE === \"live\" ? \"live\" : \"mock\",\n}};"
       }
     },
     {
@@ -151,7 +157,7 @@
       ],
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "return [{ json: { data: { tagsAdd: { userErrors: [] }, orderUpdate: { userErrors: [] } }, mock: true } }];"
+        "jsCode": "return { json: { data: { tagsAdd: { userErrors: [] }, orderUpdate: { userErrors: [] } }, mock: true } };"
       }
     },
     {
@@ -165,7 +171,7 @@
       ],
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const ctx = $(\"Montar tags e nota\").item.json;\nconst errors = [...($json.data?.tagsAdd?.userErrors ?? []), ...($json.data?.orderUpdate?.userErrors ?? []), ...($json.errors ?? [])];\nreturn [{ json: { order_id: ctx.order_id, mode: ctx.mode, tags: ctx.tags, note: ctx.note, ok: errors.length === 0, response: $json } }];"
+        "jsCode": "const ctx = $(\"Montar tags e nota\").item.json;\nconst errors = [...($json.data?.tagsAdd?.userErrors ?? []), ...($json.data?.orderUpdate?.userErrors ?? []), ...($json.errors ?? [])];\nreturn { json: { order_id: ctx.order_id, mode: ctx.mode, tags: ctx.tags, note: ctx.note, ok: errors.length === 0, response: $json } };"
       }
     },
     {

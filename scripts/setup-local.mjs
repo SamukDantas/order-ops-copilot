@@ -24,13 +24,24 @@ let text = existsSync(envPath) ? readFileSync(envPath, "utf8") : readFileSync(jo
 const set = (key, value) => {
   const cur = parse(text)[key];
   if (cur) return; // já preenchido: respeita o usuário
-  text = text.replace(new RegExp(`^${key}=.*$`, "m"), `${key}=${value}`);
+  const linha = new RegExp(`^${key}=.*$`, "m");
+  text = linha.test(text) ? text.replace(linha, `${key}=${value}`) : `${text.trimEnd()}
+${key}=${value}
+`;
 };
 
-set("N8N_WEBHOOK_SECRET", randomBytes(24).toString("hex"));
+// Padrões para .env criados antes destas variáveis existirem
+set("LLM_PROVEDOR", "codex");
+set("CODEX_RUN_MODEL", "gpt-5.6-luna");
+set("CODEX_FALLBACK_MODEL", "gpt-5.6-terra");
+set("LLM_GATEWAY_URL", "http://host.docker.internal:8787");
 
+set("N8N_WEBHOOK_SECRET", randomBytes(24).toString("hex"));
+set("LLM_GATEWAY_SECRET", randomBytes(24).toString("hex"));
+
+let status = null;
 try {
-  const status = JSON.parse(execSync("npx -y supabase@latest status -o json", { cwd: root, stdio: ["ignore", "pipe", "ignore"] }).toString());
+  status = JSON.parse(execSync("npx -y supabase@latest status -o json", { cwd: root, stdio: ["ignore", "pipe", "ignore"] }).toString());
   const secret = status.SECRET_KEY ?? status.SERVICE_ROLE_KEY;
   if (secret) set("SUPABASE_SECRET_KEY", secret);
 } catch {
@@ -48,12 +59,22 @@ writeFileSync(join(root, "supabase", "functions", ".env"), [
   `N8N_WEBHOOK_SECRET=${env.N8N_WEBHOOK_SECRET}`,
 ].join("\n") + "\n");
 
+// Dashboard: só a chave publicável (o RLS protege os dados)
+if (status) {
+  writeFileSync(join(root, "web", ".env.local"), [
+    `NEXT_PUBLIC_SUPABASE_URL=${status.API_URL}`,
+    `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${status.PUBLISHABLE_KEY ?? status.ANON_KEY}`,
+    `N8N_BASE_URL=http://localhost:5678`,
+    `N8N_WEBHOOK_SECRET=${env.N8N_WEBHOOK_SECRET}`,
+  ].join("\n") + "\n");
+}
+
 // Credenciais do n8n (IDs fixos referenciados pelos workflows gerados)
 const credsDir = join(root, "n8n", ".credentials");
 mkdirSync(credsDir, { recursive: true });
 const credentials = [
-  { id: "ooCredAnthropic1", name: "Anthropic API", type: "httpHeaderAuth",
-    data: { name: "x-api-key", value: env.ANTHROPIC_API_KEY ?? "" } },
+  { id: "ooCredLlmGateway", name: "LLM gateway secret", type: "httpHeaderAuth",
+    data: { name: "x-gateway-secret", value: env.LLM_GATEWAY_SECRET } },
   { id: "ooCredSupabase01", name: "Supabase service role", type: "httpCustomAuth",
     data: { json: JSON.stringify({ headers: {
       apikey: env.SUPABASE_SECRET_KEY ?? "",
@@ -67,6 +88,6 @@ const credentials = [
 ];
 writeFileSync(join(credsDir, "credentials.json"), JSON.stringify(credentials, null, 2));
 
-const missing = ["ANTHROPIC_API_KEY", "SUPABASE_SECRET_KEY"].filter((k) => !env[k]);
+const missing = ["SUPABASE_SECRET_KEY", ...(env.LLM_PROVEDOR === "anthropic" ? ["ANTHROPIC_API_KEY"] : [])].filter((k) => !env[k]);
 console.log("✓ .env, supabase/functions/.env e n8n/.credentials/credentials.json atualizados");
 if (missing.length) console.log("! Falta preencher no .env: " + missing.join(", ") + " (e rodar `npm run setup` de novo)");

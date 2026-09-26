@@ -5,7 +5,7 @@
 | **Author** | Samuel Dantas |
 | **Status** | Approved for build (v1) |
 | **Date** | 2026-09-26 |
-| **Stack** | Shopify · Supabase (Postgres, RLS, Edge Functions) · n8n · Claude · Next.js on Vercel |
+| **Stack** | Shopify · Supabase (Postgres, RLS, Edge Functions) · n8n · LLM gateway (Codex CLI or Claude API) · Next.js on Vercel |
 
 ---
 
@@ -54,7 +54,9 @@ flowchart LR
     EF -->|verify HMAC · dedupe · upsert| DB[(Supabase Postgres<br/>RLS by brand)]
     EF -->|notify order id| N8N_R[n8n: review-order]
     SWEEP[n8n: sweep-pending<br/>every 5 min] -->|pending &gt; 2 min| N8N_R
-    N8N_R -->|prompt vN| CLAUDE[Claude API]
+    N8N_R -->|prompt vN| GW[LLM gateway<br/>host]
+    GW -->|LLM_PROVEDOR=codex| CODEX[Codex CLI<br/>codex exec, read-only]
+    GW -.->|LLM_PROVEDOR=anthropic| CLAUDE[Claude API]
     N8N_R -->|review + audit| DB
     N8N_R -->|auto-approved| N8N_A[n8n: apply-decision]
     UI[Next.js dashboard<br/>Vercel] -->|user JWT, RLS| DB
@@ -139,7 +141,10 @@ The Edge Function and n8n use the `service_role` key server-side. The browser ne
 
 ## 6. AI design
 
-- **Model:** Claude, called from n8n over the Messages API.
+- **Provider behind a gateway.** n8n never talks to a model vendor directly: it posts the review request to a small gateway on the host (`services/llm-gateway.mjs`), which answers in one normalised, Messages-API-shaped format whatever the provider is. `LLM_PROVEDOR` picks the provider:
+  - `codex` (default): the Codex CLI in headless mode (`codex exec`) on the ChatGPT account login, following the same method as the internal `squad-engenharia` project: read-only sandbox in an empty temp dir, machine config and rules ignored, ephemeral, JSONL output where `turn.failed` counts as failure even on exit 0, prompt on stdin, JSON schema enforced with `--output-schema`, and a fallback model when the primary one is refused for plan, limit or capacity reasons. Default model: `gpt-5.6-luna`, suited to short, high-volume tasks, with `gpt-5.6-terra` as the fallback.
+  - `anthropic`: the Claude Messages API through the official SDK (`claude-opus-5`, structured outputs, server-side refusal fallback). Needs an API key with credit.
+  Switching provider changes an environment variable, not the workflow.
 - **Output contract:** a single JSON object validated in n8n before anything is written:
   `{ verdict: "ok" | "fix" | "reject", issues: string[], suggested_text: string | null, confidence: 0..1, customer_message: string | null }`
 - **Prompts are versioned files** in `prompts/` (e.g. `personalisation-review.v1.md`). The version is stored with every review.
@@ -154,14 +159,14 @@ The Edge Function and n8n use the `service_role` key server-side. The browser ne
 | Duplicate webhook | Unique `webhook_id`; returns 200 without reprocessing |
 | Invalid HMAC | 401, nothing stored |
 | n8n unreachable | Order stays `pending`; `sweep-pending` picks it up within 5 minutes |
-| Claude error or timeout | n8n retries 3 times with backoff; then the order goes to `error`, a `workflow_errors` row is written and the item appears in the dashboard's error tab |
+| LLM error or timeout (provider or gateway) | n8n retries 3 times with backoff; then the item is stored with verdict `unavailable`, the order goes to `needs_review` and a `workflow_errors` row is written |
 | Invalid model output | Treated as low confidence, routed to `needs_review` |
 | Shopify write-back fails | Retried; the failure is logged in `workflow_errors` |
 
 ## 8. Security
 
 - Shopify HMAC verified with a constant-time comparison over the raw body.
-- Secrets (Shopify, Anthropic, `service_role`) live only in Edge Function secrets and n8n credentials.
+- Secrets (Shopify, LLM gateway, `service_role`) live only in Edge Function secrets, n8n credentials and the host `.env`. The gateway requires a shared secret and compares it in constant time.
 - The n8n webhooks require a shared secret header.
 - The dashboard uses Supabase Auth, and every query goes through RLS.
 - PII is minimised: only the customer's first name and the order fields needed for review are stored in structured columns.

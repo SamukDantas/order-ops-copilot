@@ -7,10 +7,11 @@ Revisão automática, com IA, da personalização de pedidos do Shopify, com rev
 - `supabase/migrations/`: schema, RLS e funções (`claim_orders_for_review`, `save_review_results`, `decide_review`)
 - `supabase/functions/shopify-webhook/`: entrada dos webhooks (HMAC, idempotência, persistência)
 - `supabase/functions/_shared/`: verificações determinísticas e HMAC (Deno, testado com `deno test`)
-- `lib/`: requisição ao Claude e lógica de roteamento. **Fonte única**: é injetada nos workflows do n8n
+- `lib/`: requisição de revisão, lógica de roteamento e provedor de LLM. **Fonte única**: é injetada nos workflows do n8n
+- `services/llm-gateway.mjs`: porta entre o n8n (container) e o provedor no host. `LLM_PROVEDOR=codex` (padrão, Codex CLI com login ChatGPT, mesma metodologia do squad-engenharia) ou `anthropic`
 - `prompts/`: prompts versionados + schema de saída
 - `n8n/workflows/`: **gerado** por `npm run workflows`. Nunca edite o JSON à mão; edite `scripts/gerar-workflows.mjs` ou `lib/`
-- `evals/cases.json`: conjunto rotulado; `npm run eval` mede o prompt (chama a API, custa dinheiro)
+- `evals/cases.json`: conjunto rotulado; `npm run eval` mede o prompt (uma chamada real por caso: cota do Codex ou crédito da API)
 - `fixtures/shopify/` + `npm run simular`: webhooks assinados para testar sem loja real
 
 ## Regras
@@ -29,4 +30,6 @@ npm test                 # unit (Node + Deno)
 npm run workflows        # regenera n8n/workflows a partir de lib/ e prompts/
 npm run db:reset         # recria o banco local com migrations + seed
 npm run simular -- all   # envia todos os webhooks de exemplo
+npm run gateway          # sobe o gateway de LLM (obrigatório para o n8n revisar)
+npm run test:integration # RLS contra o Supabase local
 ```
