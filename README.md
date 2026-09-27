@@ -10,7 +10,7 @@ A multi-brand D2C retailer sells made-to-order personalised products (engraving,
 
 ## Live demo
 
-**https://web-fawn-ten-39.vercel.app** · login `demo@order-ops-copilot.dev` · password `!UserTest30`
+**https://order-ops-copilot.vercel.app** · login `demo@order-ops-copilot.dev` · password `!UserTest30`
 
 The demo account is a reviewer on both brands. The online demo runs the dashboard on Vercel and Supabase (London) with orders that the AI really reviewed: 2 auto-approved and 5 waiting for a person, including the prompt-injection attempt. The AI pipeline (n8n, the LLM gateway and the Codex CLI) runs in the local setup below, so in the demo your decisions are saved but the Shopify write-back is disabled. Demo data is reset from time to time.
 

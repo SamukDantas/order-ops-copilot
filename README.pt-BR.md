@@ -10,7 +10,7 @@ Um varejista D2C multimarca vende produtos personalizados feitos sob encomenda (
 
 ## Demo online
 
-**https://web-fawn-ten-39.vercel.app** · login `demo@order-ops-copilot.dev` · senha `!UserTest30`
+**https://order-ops-copilot.vercel.app** · login `demo@order-ops-copilot.dev` · senha `!UserTest30`
 
 A conta demo é revisora nas duas marcas. A demo online roda o painel na Vercel e no Supabase (Londres) com pedidos que a IA revisou de verdade: 2 aprovados automaticamente e 5 aguardando uma pessoa, incluindo a tentativa de injeção de prompt. O pipeline de IA (n8n, gateway de LLM e Codex CLI) roda no ambiente local descrito abaixo, então na demo as decisões são salvas, mas o write-back no Shopify fica desativado. Os dados da demo são resetados de tempos em tempos.
 
