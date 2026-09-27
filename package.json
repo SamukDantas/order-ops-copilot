@@ -14,6 +14,7 @@
     "db:reset": "npx -y supabase@latest db reset",
     "functions:serve": "npx -y supabase@latest functions serve --env-file supabase/functions/.env --no-verify-jwt",
     "simular": "node scripts/simular-webhook.ts",
+    "shopify": "node --env-file=.env scripts/shopify.ts",
     "eval": "node --env-file=.env scripts/eval.ts",
     "test:integration": "node --test tests/*.test.ts",
     "seed:usuarios": "node scripts/seed-usuarios.ts",

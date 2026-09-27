@@ -66,7 +66,6 @@ const CRED = {
   llm: { id: "ooCredLlmGateway", name: "LLM gateway secret" },
   supabase: { id: "ooCredSupabase01", name: "Supabase service role" },
   webhook: { id: "ooCredWebhook001", name: "n8n webhook secret" },
-  shopify: { id: "ooCredShopify001", name: "Shopify Admin API" },
 };
 
 // Lógica pura reaproveitada no Code node: sem tipos e sem "export"
@@ -329,24 +328,43 @@ return { json: {
   shop_domain: o.brands.shop_domain,
   order_gid: "gid://shopify/Order/" + o.shopify_order_id,
   tags, note,
-  mode: $env.SHOPIFY_MODE === "live" ? "live" : "mock",
+  // live só para a loja do app (SHOPIFY_STORE_DOMAIN); as marcas fictícias ficam em mock
+  mode: $env.SHOPIFY_MODE === "live" && o.brands.shop_domain === $env.SHOPIFY_STORE_DOMAIN ? "live" : "mock",
 }};`, "runOnceForEachItem"),
   ifNode("Shopify em modo live?", pos(3), "={{ $json.mode }}", "live"),
-  httpJson("Shopify: tags + nota", pos(4, -0.5), {
-    url: "=https://{{ $json.shop_domain }}/admin/api/2026-07/graphql.json",
+  // Token por client credentials (app e loja na mesma organização): vale 24 h,
+  // então é obtido a cada write-back em vez de ficar guardado numa credencial.
+  {
+    id: slug("Shopify: obter token"), name: "Shopify: obter token", type: "n8n-nodes-base.httpRequest", typeVersion: 4.2,
+    position: pos(4, -0.5),
+    parameters: {
+      method: "POST",
+      url: "=https://{{ $json.shop_domain }}/admin/oauth/access_token",
+      sendBody: true,
+      contentType: "form-urlencoded",
+      bodyParameters: { parameters: [
+        { name: "grant_type", value: "client_credentials" },
+        { name: "client_id", value: "={{ $env.SHOPIFY_CLIENT_ID }}" },
+        { name: "client_secret", value: "={{ $env.SHOPIFY_CLIENT_SECRET }}" },
+      ] },
+      options: {},
+    },
+    retryOnFail: true, maxTries: 3, waitBetweenTries: 3000,
+  },
+  httpJson("Shopify: tags + nota", pos(5, -0.5), {
+    url: `=https://{{ $("Montar tags e nota").item.json.shop_domain }}/admin/api/2026-07/graphql.json`,
+    headers: [{ name: "X-Shopify-Access-Token", value: "={{ $json.access_token }}" }],
     body: `={{ JSON.stringify({
   query: "mutation($id: ID!, $tags: [String!]!, $input: OrderInput!) { tagsAdd(id: $id, tags: $tags) { userErrors { message } } orderUpdate(input: $input) { userErrors { message } } }",
-  variables: { id: $json.order_gid, tags: $json.tags, input: { id: $json.order_gid, note: $json.note } }
+  variables: (({ order_gid, tags, note }) => ({ id: order_gid, tags, input: { id: order_gid, note } }))($("Montar tags e nota").item.json)
 }) }}`,
-    auth: { authentication: "genericCredentialType", genericAuthType: "httpHeaderAuth" },
-    creds: { httpHeaderAuth: CRED.shopify },
     extra: { retryOnFail: true, maxTries: 3, waitBetweenTries: 3000 },
   }),
-  code("Simular Shopify (mock)", pos(4, 0.5), `return { json: { data: { tagsAdd: { userErrors: [] }, orderUpdate: { userErrors: [] } }, mock: true } };`, "runOnceForEachItem"),
-  code("Resultado do write-back", pos(5), `const ctx = $("Montar tags e nota").item.json;
+  code("Simular Shopify (mock)", pos(4.5, 0.5), `return { json: { data: { tagsAdd: { userErrors: [] }, orderUpdate: { userErrors: [] } }, mock: true } };`, "runOnceForEachItem"),
+  code("Resultado do write-back", pos(6), `const ctx = $("Montar tags e nota").item.json;
 const errors = [...($json.data?.tagsAdd?.userErrors ?? []), ...($json.data?.orderUpdate?.userErrors ?? []), ...($json.errors ?? [])];
 return { json: { order_id: ctx.order_id, mode: ctx.mode, tags: ctx.tags, note: ctx.note, ok: errors.length === 0, response: $json } };`, "runOnceForEachItem"),
-  httpJson("Registrar sync", pos(6), {
+  httpJson("Registrar sync", pos(7), {
     url: `${SUPA}/rest/v1/shopify_sync_log`,
     body: "={{ JSON.stringify($json) }}",
     auth: supabaseAuth, creds: supabaseCreds,
@@ -356,7 +374,8 @@ const aplicar = workflow(WF.aplicar, "Aplicar decisão no Shopify", aplicarNodes
   ["Webhook: aplicar decisão", "Buscar pedido"],
   ["Buscar pedido", "Montar tags e nota"],
   ["Montar tags e nota", "Shopify em modo live?"],
-  ["Shopify em modo live?", "Shopify: tags + nota", 0],
+  ["Shopify em modo live?", "Shopify: obter token", 0],
+  ["Shopify: obter token", "Shopify: tags + nota"],
   ["Shopify em modo live?", "Simular Shopify (mock)", 1],
   ["Shopify: tags + nota", "Resultado do write-back"],
   ["Simular Shopify (mock)", "Resultado do write-back"],
