@@ -36,7 +36,9 @@ export async function decide(formData: FormData) {
 
   if (status === "approved" || status === "rejected") {
     const wb = await requestShopifyWriteBack(orderId);
-    back(wb.ok ? "Decision saved and sent to Shopify." : `Decision saved, but the Shopify update failed (${wb.error}).`);
+    if (wb.status === "sent") back("Decision saved and sent to Shopify.");
+    if (wb.status === "disabled") back("Decision saved. Shopify write-back is disabled in this online demo (it runs in the full local setup).");
+    back(`Decision saved, but the Shopify update failed (${wb.status === "failed" ? wb.error : "unknown"}).`);
   }
   back("Decision saved.");
 }

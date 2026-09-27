@@ -19,7 +19,9 @@
     "seed:usuarios": "node scripts/seed-usuarios.ts",
     "web": "npm run dev --prefix web",
     "gateway": "node --env-file=.env services/llm-gateway.ts",
-    "typecheck": "tsc -p tsconfig.json && deno check --node-modules-dir=none supabase/functions/shopify-webhook/index.ts"
+    "typecheck": "tsc -p tsconfig.json && deno check --node-modules-dir=none supabase/functions/shopify-webhook/index.ts",
+    "demo:exportar": "node scripts/exportar-demo.ts",
+    "demo:carregar": "node --env-file=.env scripts/carregar-demo.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0"
