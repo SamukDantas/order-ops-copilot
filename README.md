@@ -79,6 +79,20 @@ flowchart TB
 | **Postgres + RLS** | Source of truth and access control | One policy layer protects the dashboard, the API and anything built later. Atomic functions make each workflow step all-or-nothing. |
 | **Dashboard** | Human-in-the-loop review | Holds only the publishable key and acts with the signed-in user's JWT. It never sees `service_role`. |
 
+### n8n workflows
+
+Both workflows are generated from code (`npm run workflows`) and imported by CLI. Node names are in Portuguese, the author's working language.
+
+**Review order:** two entry points (the Edge Function webhook and a 5-minute sweep for pending orders) share one path: an atomic claim, one LLM request per item with 3 retries, validation and routing, a transactional save, and then either the Shopify write-back or the failure log.
+
+![n8n workflow "Revisar pedido": webhook and 5-minute schedule into claim, LLM review, routing, save, Shopify write-back and failure logging](docs/screenshots/n8n-review-order.png)
+
+**Apply decision:** fetches the decided order, builds tags and a note (including any text a reviewer corrected), then calls the Shopify Admin API in live mode or a mock in development, and logs the result either way.
+
+![n8n workflow "Aplicar decisão no Shopify": webhook, fetch order, build tags and note, live or mock Shopify call, log the sync](docs/screenshots/n8n-apply-decision.png)
+
+A third workflow, **error handler**, is wired as the error workflow for both and writes every failure to `workflow_errors`.
+
 ## Order lifecycle
 
 ```mermaid
