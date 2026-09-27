@@ -81,6 +81,20 @@ flowchart TB
 | **Postgres + RLS** | Fonte da verdade e controle de acesso | Uma única camada de políticas protege o painel, a API e o que vier depois. Funções atômicas tornam cada passo do workflow tudo-ou-nada. |
 | **Painel** | Revisão humana | Só tem a chave publicável e age com o JWT do usuário logado. Nunca vê a `service_role`. |
 
+### Workflows do n8n
+
+Os dois workflows são gerados a partir do código (`npm run workflows`) e importados por linha de comando.
+
+**Revisar pedido:** duas entradas (o webhook da Edge Function e uma varredura de pendentes a cada 5 minutos) seguem pelo mesmo caminho: claim atômico, uma requisição ao LLM por item com 3 retentativas, validação e roteamento, gravação em uma transação e, no fim, o write-back no Shopify ou o registro da falha.
+
+![Workflow n8n "Revisar pedido": webhook e agendamento de 5 minutos levando a claim, revisão pelo LLM, roteamento, gravação, write-back no Shopify e registro de falhas](docs/screenshots/n8n-review-order.png)
+
+**Aplicar decisão no Shopify:** busca o pedido decidido, monta as tags e a nota (incluindo o texto corrigido pelo revisor, se houver) e chama a Admin API do Shopify em modo live, ou uma simulação em desenvolvimento. Nos dois casos, registra o resultado.
+
+![Workflow n8n "Aplicar decisão no Shopify": webhook, busca do pedido, montagem de tags e nota, chamada live ou simulada ao Shopify, registro do sync](docs/screenshots/n8n-apply-decision.png)
+
+Um terceiro workflow, **Tratar erros**, é configurado como workflow de erro dos dois e grava cada falha em `workflow_errors`.
+
 ## Ciclo de vida do pedido
 
 ```mermaid
