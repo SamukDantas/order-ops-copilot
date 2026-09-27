@@ -5,10 +5,15 @@ import "server-only";
  * Falha aqui não desfaz a decisão: ela já está gravada, e o erro fica
  * visível para reenvio.
  */
-export async function requestShopifyWriteBack(orderId: string): Promise<{ ok: boolean; error?: string }> {
+export type WriteBackResult =
+  | { status: "sent" }
+  | { status: "disabled" } // demo online: sem n8n, a decisão só é gravada
+  | { status: "failed"; error: string };
+
+export async function requestShopifyWriteBack(orderId: string): Promise<WriteBackResult> {
   const base = process.env.N8N_BASE_URL;
   const secret = process.env.N8N_WEBHOOK_SECRET;
-  if (!base || !secret) return { ok: false, error: "n8n não configurado" };
+  if (!base || !secret) return { status: "disabled" };
 
   try {
     const res = await fetch(`${base}/webhook/apply-decision`, {
@@ -17,8 +22,8 @@ export async function requestShopifyWriteBack(orderId: string): Promise<{ ok: bo
       body: JSON.stringify({ order_id: orderId }),
       signal: AbortSignal.timeout(5000),
     });
-    return res.ok ? { ok: true } : { ok: false, error: `n8n respondeu ${res.status}` };
+    return res.ok ? { status: "sent" } : { status: "failed", error: `n8n respondeu ${res.status}` };
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    return { status: "failed", error: e instanceof Error ? e.message : String(e) };
   }
 }
