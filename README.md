@@ -1,5 +1,7 @@
 # Order Ops Copilot
 
+🌐 **English** · [Português](README.pt-BR.md)
+
 **AI review of personalised Shopify orders, with a human in the loop only where it matters.**
 
 A multi-brand D2C retailer sells made-to-order personalised products (engraving, printing, embroidery). Every order carries free text typed by the customer, and a typo, an emoji on an engraving or an offensive line that reaches production is a total loss: the item cannot be resold. Order Ops Copilot reviews **every personalised order automatically within seconds**, auto-approves the clean ones, and sends only the flagged ones, each with a suggested correction and a draft message for the customer, to an operations dashboard.
@@ -232,7 +234,7 @@ tests/                RLS integration tests
 web/                  Next.js dashboard
 ```
 
-> Code comments and commit messages are in Brazilian Portuguese (the author's working language). The product, the UI and the documentation are in English.
+> Code comments and commit messages are in Brazilian Portuguese (the author's working language). The product and the UI are in English; this README is also available in [Portuguese](README.pt-BR.md).
 
 ## Known limitations and next steps
 
