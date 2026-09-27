@@ -8,6 +8,12 @@ Um varejista D2C multimarca vende produtos personalizados feitos sob encomenda (
 
 > Construído de forma AI-native com Claude Code, de um [documento de design técnico](docs/TDD.md) até a implementação, os testes e a avaliação. A camada de LLM não depende de provedor: por padrão roda no **Codex CLI** (login da conta ChatGPT, sem chave de API paga), e a Messages API do Claude é uma alternativa direta.
 
+## Demo online
+
+**https://order-ops-copilot.vercel.app** · login `demo@order-ops-copilot.dev` · senha `!UserTest30`
+
+A conta demo é revisora nas duas marcas. A demo online roda o painel na Vercel e no Supabase (Londres) com pedidos que a IA revisou de verdade: 2 aprovados automaticamente e 5 aguardando uma pessoa, incluindo a tentativa de injeção de prompt. O pipeline de IA (n8n, gateway de LLM e Codex CLI) roda no ambiente local descrito abaixo, então na demo as decisões são salvas, mas o write-back no Shopify fica desativado. Os dados da demo são resetados de tempos em tempos.
+
 | Fila de revisão | Correção sugerida pela IA |
 |---|---|
 | ![Fila de revisão com indicadores, abas de status e filtro por marca](docs/screenshots/queue.png) | ![Página do pedido com o texto do cliente, a correção sugerida, as verificações e os botões de decisão](docs/screenshots/order-suggestion.png) |
@@ -257,7 +263,7 @@ web/                  painel Next.js
 - **Loja de desenvolvimento real do Shopify:** hoje o write-back roda em modo simulado (`SHOPIFY_MODE=mock`). O caminho real (Admin GraphQL `tagsAdd` + `orderUpdate`) está implementado, mas ainda não foi exercitado contra uma loja.
 - **Ordem dos campos:** a personalização é gravada como objeto `jsonb`, e o Postgres reordena as chaves. Ela deveria virar uma lista ordenada de `{name, value}`, formato que o resto do pipeline já usa.
 - **Limites por produto** vêm de uma tabela estática por SKU (`product_rules`). Uma versão futura deve lê-los dos metafields do Shopify.
-- **Deploy:** Supabase na nuvem + Vercel para o painel, com o gateway de LLM num host pequeno sempre ligado.
+- **Pipeline completo online:** o painel e o banco já estão no ar (veja a [Demo online](#demo-online)). Colocar o pipeline de IA online também exige o n8n e o gateway de LLM num host pequeno sempre ligado, com um provedor hospedado no lugar do login pessoal do Codex.
 - **Métricas:** p95 do tempo até a revisão e taxa de aprovação automática por marca, a partir dos dados já gravados.
 
 ## Autor

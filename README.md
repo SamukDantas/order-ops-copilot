@@ -8,6 +8,12 @@ A multi-brand D2C retailer sells made-to-order personalised products (engraving,
 
 > Built AI-natively with Claude Code, from a [Technical Design Document](docs/TDD.md) through build, tests and evaluation. The LLM layer is provider-agnostic: by default it runs on the **Codex CLI** (ChatGPT account login, no paid API key), and the Claude Messages API is a drop-in alternative.
 
+## Live demo
+
+**https://order-ops-copilot.vercel.app** · login `demo@order-ops-copilot.dev` · password `!UserTest30`
+
+The demo account is a reviewer on both brands. The online demo runs the dashboard on Vercel and Supabase (London) with orders that the AI really reviewed: 2 auto-approved and 5 waiting for a person, including the prompt-injection attempt. The AI pipeline (n8n, the LLM gateway and the Codex CLI) runs in the local setup below, so in the demo your decisions are saved but the Shopify write-back is disabled. Demo data is reset from time to time.
+
 | Review queue | Correction suggested by the AI |
 |---|---|
 | ![Review queue with KPIs, status tabs and brand filter](docs/screenshots/queue.png) | ![Order page with the customer's text, the suggested fix, checks and decision buttons](docs/screenshots/order-suggestion.png) |
@@ -255,7 +261,7 @@ web/                  Next.js dashboard
 - **Real Shopify development store:** write-back runs in mock mode today (`SHOPIFY_MODE=mock`), and the live path (Admin GraphQL `tagsAdd` + `orderUpdate`) is wired but not yet exercised against a store.
 - **Field order:** personalisation is stored as a `jsonb` object, and Postgres normalises key order. It should become an ordered list of `{name, value}`, which the rest of the pipeline already uses.
 - **Product limits** come from a static SKU table (`product_rules`). A later version should read them from Shopify metafields.
-- **Deployment:** Supabase cloud + Vercel for the dashboard, with the LLM gateway on a small always-on host.
+- **Full pipeline online:** the dashboard and database are live (see [Live demo](#live-demo)). Running the AI pipeline online as well needs n8n and the LLM gateway on a small always-on host, plus a hosted provider instead of a personal Codex login.
 - **Metrics:** p95 time-to-review and auto-approval rate per brand, from the data already stored.
 
 ## Author
