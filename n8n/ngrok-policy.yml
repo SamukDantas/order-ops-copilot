@@ -1,0 +1,12 @@
+# Política do túnel público para o n8n local (npm run tunel).
+# Só os dois webhooks do pipeline passam; o editor do n8n, a API e qualquer
+# outro caminho respondem 404. Os webhooks ainda exigem o header
+# x-webhook-secret (validado pelo próprio n8n).
+on_http_request:
+  - expressions:
+      - "!(req.method == 'POST' && (req.url.path == '/webhook/review-order' || req.url.path == '/webhook/apply-decision'))"
+    actions:
+      - type: custom-response
+        config:
+          status_code: 404
+          body: "not found"

@@ -10,6 +10,9 @@ services:
       - "5678:5678"
     env_file:
       - ../.env
+      # Sobrescreve o Supabase quando o alvo é a nuvem (npm run n8n:alvo -- nuvem)
+      - path: ./.env.alvo
+        required: false
     environment:
       GENERIC_TIMEZONE: Europe/London
       TZ: Europe/London
