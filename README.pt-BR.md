@@ -34,6 +34,7 @@ A terceira marca, **Order Ops Demo Store**, é uma [loja de desenvolvimento real
 - **Prompts versionados e avaliados.** 24 casos rotulados, e um prompt só entra se o recall de sinalização continuar em 100% e as aprovações automáticas indevidas em 0. A avaliação encontrou uma brecha real de injeção de prompt na v1, corrigida na v2 (veja o [histórico de avaliação](docs/EVALS.md)).
 - **Row Level Security entre marcas.** Revisores só veem e decidem pedidos das próprias marcas. As decisões passam por uma função `SECURITY DEFINER` que confere de novo, no servidor, o papel do usuário e as regras do produto. Coberto por testes de integração que fazem login como usuários reais.
 - **Workflows gerados a partir do código.** O JSON do n8n é gerado pelos mesmos módulos que os testes e a avaliação exercitam, então o prompt avaliado é o prompt que roda.
+- **Métricas contra as metas do design.** Uma página de métricas mostra, por marca, a fatia aprovada automaticamente e a que precisou de revisão humana, e o p50/p95 do tempo até a revisão da IA e até a decisão humana, comparados às metas do TDD. O cálculo é feito no Postgres (`brand_metrics`) sob o RLS do usuário logado, então cada pessoa só vê as próprias marcas.
 
 ## Arquitetura
 
@@ -365,7 +366,7 @@ web/                  painel Next.js
 - **Ordem dos campos:** a personalização é gravada como objeto `jsonb`, e o Postgres reordena as chaves. Ela deveria virar uma lista ordenada de `{name, value}`, formato que o resto do pipeline já usa.
 - **Limites por produto** vêm de uma tabela estática por SKU (`product_rules`). Uma versão futura deve lê-los dos metafields do Shopify.
 - **Pipeline completo online:** o painel, o banco e o endpoint de webhooks já estão no ar, e o pipeline de IA os atende a partir da máquina do autor por um túnel (veja [Loja de desenvolvimento real do Shopify](#loja-de-desenvolvimento-real-do-shopify)). Deixá-lo sempre ligado exige o n8n e o gateway de LLM num host pequeno, com um provedor hospedado no lugar do login pessoal do Codex.
-- **Métricas:** p95 do tempo até a revisão e taxa de aprovação automática por marca, a partir dos dados já gravados.
+- **Histórico de métricas:** a página calcula a janela atual a cada acesso. Tendência ao longo do tempo (fotos diárias) e alertas quando uma marca sai da meta são o próximo passo.
 
 ## Autor
 

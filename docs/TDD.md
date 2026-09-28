@@ -46,6 +46,8 @@ Mistakes are expensive: a personalised item cannot be resold, so every productio
 | Flag precision on the evaluation set | ≥ 90% |
 | Lost reviews (webhook received, never reviewed) | 0, enforced by the sweep job |
 
+The second and third metrics are tracked per brand on the dashboard's Metrics page (`brand_metrics`, a `SECURITY INVOKER` function, so RLS limits each person to their brands), together with the time from AI review to human decision and the number of decisions waiting for a Shopify sync. Time to review is measured from the persisted webhook to the first AI review.
+
 ## 4. Architecture
 
 ```mermaid
@@ -227,7 +229,7 @@ The Edge Function and n8n use the `service_role` key server-side. The browser ne
 | 1 | Schema + RLS, Edge Function, Shopify webhook simulator, TDD | Done |
 | 2 | n8n workflows (review, sweep, apply-decision, error handler), prompt v1 + evaluation set | Done (prompt v2 after the evaluation found a prompt-injection gap) |
 | 3 | Dashboard (auth, brand filter, review queue, decisions), deploy on Vercel | Done |
-| 4 | Real Shopify development store, metrics, hardening | Store and write-back retry done and verified end to end; metrics pending |
+| 4 | Real Shopify development store, metrics, hardening | Store, write-back retry and metrics page done and verified end to end |
 
 ## 10. Decisions and open questions
 

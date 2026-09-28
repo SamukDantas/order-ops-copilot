@@ -6,7 +6,13 @@ export function Header({ email }: { email?: string }) {
   return (
     <header className="border-b border-border bg-surface">
       <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3">
-        <Link href="/" className="font-semibold">Order Ops Copilot</Link>
+        <div className="flex items-center gap-5">
+          <Link href="/" className="font-semibold">Order Ops Copilot</Link>
+          <nav className="flex gap-4 text-sm text-muted">
+            <Link href="/" className="hover:text-foreground">Queue</Link>
+            <Link href="/metrics" className="hover:text-foreground">Metrics</Link>
+          </nav>
+        </div>
         <div className="flex items-center gap-3 text-sm text-muted">
           <span className="hidden sm:inline">{email}</span>
           <form action={signOut}>
