@@ -30,6 +30,70 @@
       }
     },
     {
+      "id": "a-cada-5-min-sync",
+      "name": "A cada 5 min: sem sync",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -520,
+        500
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "pedidos-sem-sync",
+      "name": "Pedidos sem sync",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -260,
+        500
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/rpc/orders_pending_sync",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendHeaders": false,
+        "headerParameters": {
+          "parameters": []
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({}) }}",
+        "options": {}
+      },
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "ooCredSupabase01",
+          "name": "Supabase service role"
+        }
+      }
+    },
+    {
+      "id": "um-item-por-pedido",
+      "name": "Um item por pedido",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        500
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return $input.all()\n  .filter((i) => i.json.order_id)\n  .map((i) => ({ json: { body: { order_id: i.json.order_id } } }));"
+      }
+    },
+    {
       "id": "buscar-pedido",
       "name": "Buscar pedido",
       "type": "n8n-nodes-base.httpRequest",
@@ -147,7 +211,8 @@
       },
       "retryOnFail": true,
       "maxTries": 3,
-      "waitBetweenTries": 3000
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
     },
     {
       "id": "shopify-tags-nota",
@@ -177,7 +242,8 @@
       },
       "retryOnFail": true,
       "maxTries": 3,
-      "waitBetweenTries": 3000
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
     },
     {
       "id": "simular-shopify-mock",
@@ -204,7 +270,7 @@
       ],
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const ctx = $(\"Montar tags e nota\").item.json;\nconst errors = [...($json.data?.tagsAdd?.userErrors ?? []), ...($json.data?.orderUpdate?.userErrors ?? []), ...($json.errors ?? [])];\nreturn { json: { order_id: ctx.order_id, mode: ctx.mode, tags: ctx.tags, note: ctx.note, ok: errors.length === 0, response: $json } };"
+        "jsCode": "const ctx = $(\"Montar tags e nota\").item.json;\nconst nodeError = $json.error ? { message: String($json.error.message ?? $json.error) } : null;\nconst errors = [...($json.data?.tagsAdd?.userErrors ?? []), ...($json.data?.orderUpdate?.userErrors ?? []), ...($json.errors ?? []), ...(nodeError ? [nodeError] : [])];\nreturn { json: { order_id: ctx.order_id, mode: ctx.mode, tags: ctx.tags, note: ctx.note, ok: errors.length === 0, response: nodeError ? { error: nodeError } : $json } };"
       }
     },
     {
@@ -240,6 +306,39 @@
   ],
   "connections": {
     "Webhook: aplicar decisão": {
+      "main": [
+        [
+          {
+            "node": "Buscar pedido",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "A cada 5 min: sem sync": {
+      "main": [
+        [
+          {
+            "node": "Pedidos sem sync",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pedidos sem sync": {
+      "main": [
+        [
+          {
+            "node": "Um item por pedido",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Um item por pedido": {
       "main": [
         [
           {

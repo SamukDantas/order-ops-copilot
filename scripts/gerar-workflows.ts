@@ -292,6 +292,20 @@ const revisar = workflow(WF.revisar, "Revisar pedido", revisarNodes, connect([
 // ═══ 2. Aplicar decisão no Shopify ═══════════════════════════════════
 const aplicarNodes = [
   webhook("Webhook: aplicar decisão", pos(0), "apply-decision", "5b1f2a4e-8c1d-4e0b-9a51-3f7a2d6c1e02"),
+  // Reenvio: decisões que não chegaram ao Shopify (n8n fora do ar na hora, Admin API falhou)
+  {
+    id: "a-cada-5-min-sync", name: "A cada 5 min: sem sync", type: "n8n-nodes-base.scheduleTrigger", typeVersion: 1.2,
+    position: pos(-2, 1),
+    parameters: { rule: { interval: [{ field: "minutes", minutesInterval: 5 }] } },
+  },
+  httpJson("Pedidos sem sync", pos(-1, 1), {
+    url: `${SUPA}/rest/v1/rpc/orders_pending_sync`,
+    body: "={{ JSON.stringify({}) }}",
+    auth: supabaseAuth, creds: supabaseCreds,
+  }),
+  code("Um item por pedido", pos(0, 1), `return $input.all()
+  .filter((i) => i.json.order_id)
+  .map((i) => ({ json: { body: { order_id: i.json.order_id } } }));`),
   httpJson("Buscar pedido", pos(1), {
     method: "GET",
     url: `=${"{{ $env.SUPABASE_URL }}"}/rest/v1/orders?id=eq.{{ $json.body.order_id }}&select=id,order_number,shopify_order_id,status,brands(shop_domain),order_items(title,reviews(verdict,created_at,review_decisions(action,final_text,created_at)))`,
@@ -350,6 +364,7 @@ return { json: {
       options: {},
     },
     retryOnFail: true, maxTries: 3, waitBetweenTries: 3000,
+    onError: "continueRegularOutput" as const,
   },
   httpJson("Shopify: tags + nota", pos(5, -0.5), {
     url: `=https://{{ $("Montar tags e nota").item.json.shop_domain }}/admin/api/2026-07/graphql.json`,
@@ -358,12 +373,13 @@ return { json: {
   query: "mutation($id: ID!, $tags: [String!]!, $input: OrderInput!) { tagsAdd(id: $id, tags: $tags) { userErrors { message } } orderUpdate(input: $input) { userErrors { message } } }",
   variables: (({ order_gid, tags, note }) => ({ id: order_gid, tags, input: { id: order_gid, note } }))($("Montar tags e nota").item.json)
 }) }}`,
-    extra: { retryOnFail: true, maxTries: 3, waitBetweenTries: 3000 },
+    extra: { retryOnFail: true, maxTries: 3, waitBetweenTries: 3000, onError: "continueRegularOutput" },
   }),
   code("Simular Shopify (mock)", pos(4.5, 0.5), `return { json: { data: { tagsAdd: { userErrors: [] }, orderUpdate: { userErrors: [] } }, mock: true } };`, "runOnceForEachItem"),
   code("Resultado do write-back", pos(6), `const ctx = $("Montar tags e nota").item.json;
-const errors = [...($json.data?.tagsAdd?.userErrors ?? []), ...($json.data?.orderUpdate?.userErrors ?? []), ...($json.errors ?? [])];
-return { json: { order_id: ctx.order_id, mode: ctx.mode, tags: ctx.tags, note: ctx.note, ok: errors.length === 0, response: $json } };`, "runOnceForEachItem"),
+const nodeError = $json.error ? { message: String($json.error.message ?? $json.error) } : null;
+const errors = [...($json.data?.tagsAdd?.userErrors ?? []), ...($json.data?.orderUpdate?.userErrors ?? []), ...($json.errors ?? []), ...(nodeError ? [nodeError] : [])];
+return { json: { order_id: ctx.order_id, mode: ctx.mode, tags: ctx.tags, note: ctx.note, ok: errors.length === 0, response: nodeError ? { error: nodeError } : $json } };`, "runOnceForEachItem"),
   httpJson("Registrar sync", pos(7), {
     url: `${SUPA}/rest/v1/shopify_sync_log`,
     body: "={{ JSON.stringify($json) }}",
@@ -372,6 +388,9 @@ return { json: { order_id: ctx.order_id, mode: ctx.mode, tags: ctx.tags, note: c
 ];
 const aplicar = workflow(WF.aplicar, "Aplicar decisão no Shopify", aplicarNodes, connect([
   ["Webhook: aplicar decisão", "Buscar pedido"],
+  ["A cada 5 min: sem sync", "Pedidos sem sync"],
+  ["Pedidos sem sync", "Um item por pedido"],
+  ["Um item por pedido", "Buscar pedido"],
   ["Buscar pedido", "Montar tags e nota"],
   ["Montar tags e nota", "Shopify em modo live?"],
   ["Shopify em modo live?", "Shopify: obter token", 0],

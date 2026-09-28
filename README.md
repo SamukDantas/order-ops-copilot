@@ -14,7 +14,7 @@ A multi-brand D2C retailer sells made-to-order personalised products (engraving,
 
 The demo account is a reviewer on all three brands. The online demo runs the dashboard on Vercel and Supabase (London) with orders that the AI really reviewed: 2 auto-approved and 5 waiting for a person, including the prompt-injection attempt. Demo data is reset from time to time.
 
-The third brand, **Order Ops Demo Store**, is a real [Shopify development store](#real-shopify-development-store): its orders arrive through the actual `orders/create` webhook, and a decision taken in the demo writes tags and a note back to the order through the Admin API. The AI pipeline (n8n, the LLM gateway and the Codex CLI) runs on the author's machine behind a tunnel, so the real-store round trip works while it is online; otherwise decisions are saved and the dashboard says Shopify was not updated.
+The third brand, **Order Ops Demo Store**, is a real [Shopify development store](#real-shopify-development-store): its orders arrive through the actual `orders/create` webhook, and a decision taken in the demo writes tags and a note back to the order through the Admin API. The AI pipeline (n8n, the LLM gateway and the Codex CLI) runs on the author's machine behind a tunnel, so the real-store round trip works while it is online; otherwise decisions are saved and reach Shopify automatically once it is back online.
 
 | Review queue | Correction suggested by the AI |
 |---|---|
@@ -49,7 +49,7 @@ flowchart TB
     subgraph N8N["n8n (Docker)"]
         direction LR
         WF1["Review order<br/>webhook + 5-min sweep"]
-        WF2["Apply decision<br/>token + tags + note"]
+        WF2["Apply decision<br/>token + tags + note<br/>+ 5-min retry"]
         WF3["Error handler"]
     end
 
@@ -96,9 +96,9 @@ Both workflows are generated from code (`npm run workflows`) and imported by CLI
 
 ![n8n workflow "Revisar pedido": webhook and 5-minute schedule into claim, LLM review, routing, save, Shopify write-back and failure logging](docs/screenshots/n8n-review-order.png)
 
-**Apply decision:** fetches the decided order, builds tags and a note (including any text a reviewer corrected), then, in live mode, requests a short-lived access token (client credentials) and calls the Shopify Admin API; in development it calls a mock. It logs the result either way.
+**Apply decision:** fetches the decided order, builds tags and a note (including any text a reviewer corrected), then, in live mode, requests a short-lived access token (client credentials) and calls the Shopify Admin API; in development it calls a mock. It logs the result either way, including failures. A second entry point, a 5-minute sweep, re-applies decisions that have no successful sync since they were taken (the pipeline was offline, or Shopify failed), up to 5 failed attempts.
 
-![n8n workflow "Aplicar decisão no Shopify": webhook, fetch order, build tags and note, live branch (access token, then tags and note) or mock, log the sync](docs/screenshots/n8n-apply-decision.png)
+![n8n workflow "Aplicar decisão no Shopify": webhook and 5-minute retry sweep, fetch order, build tags and note, live branch (access token, then tags and note) or mock, log the sync](docs/screenshots/n8n-apply-decision.png)
 
 A third workflow, **error handler**, is wired as the error workflow for both and writes every failure to `workflow_errors`.
 
@@ -153,7 +153,7 @@ sequenceDiagram
         UI->>DB: decide_review (role and product rules re-checked)
         DB-->>UI: order approved or on hold
         UI->>N: apply-decision webhook
-        Note over UI,N: n8n unreachable: the decision stays saved and the dashboard says Shopify was not updated
+        Note over UI,N: n8n unreachable: the decision stays saved and the 5-minute sweep applies it once n8n is back
         N->>S: access token, then tags + note with the final text
         N->>DB: shopify_sync_log
     end
@@ -161,6 +161,10 @@ sequenceDiagram
 
     opt n8n unreachable when the webhook arrived
         N->>DB: 5-minute sweep claims orders pending over 2 min or stuck reviewing over 10 min
+    end
+
+    opt decision without a successful sync (pipeline offline, Shopify failed)
+        N->>DB: 5-minute sweep: orders_pending_sync, then apply-decision again (up to 5 failures)
     end
 ```
 
@@ -203,7 +207,7 @@ Details in [docs/EVALS.md](docs/EVALS.md).
 
 - **Shopify HMAC** verified in constant time over the raw body. Invalid signatures get `401` and nothing is stored.
 - **Idempotency** by webhook id. Redeliveries return `duplicate`, and upserts never reset an order's status.
-- **Persist first, notify second.** The 5-minute sweep recovers orders if n8n was down, and reclaims runs that died mid-review.
+- **Persist first, notify second.** The 5-minute sweep recovers orders if n8n was down, and reclaims runs that died mid-review. A second sweep re-applies decisions whose Shopify write-back never succeeded, and stops after 5 failed attempts.
 - **Retries** (3, with backoff) on the LLM and on the database write. After that the item fails safe to a human, and the error is written to `workflow_errors` by a dedicated n8n error workflow.
 - **Secrets** live only in `.env`, n8n credentials, Edge Function secrets and Vercel's sensitive variables. n8n webhooks and the LLM gateway require shared secrets, compared in constant time.
 - **Shopify access** uses a 24 h token from the client credentials grant, requested on every write-back and never stored. The app declares only order data and the customer's name as protected customer data.
@@ -356,7 +360,6 @@ web/                  Next.js dashboard
 
 ## Known limitations and next steps
 
-- **Write-back retry:** a decision taken while the pipeline is offline is saved, but its Shopify update is not retried automatically yet. A sweep for decided orders without a successful sync would close that gap.
 - **Field order:** personalisation is stored as a `jsonb` object, and Postgres normalises key order. It should become an ordered list of `{name, value}`, which the rest of the pipeline already uses.
 - **Product limits** come from a static SKU table (`product_rules`). A later version should read them from Shopify metafields.
 - **Full pipeline online:** the dashboard, database and webhook endpoint are live, and the AI pipeline serves them from the author's machine through a tunnel (see [Real Shopify development store](#real-shopify-development-store)). Running it always-on needs n8n and the LLM gateway on a small host, plus a hosted provider instead of a personal Codex login.

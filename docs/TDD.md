@@ -99,7 +99,7 @@ flowchart LR
     N8N -->|tags + note| SHOP
 ```
 
-When the machine is off, orders still arrive and are stored as `pending` (the sweep reviews them once n8n is back), and decisions are saved; only the Shopify write-back of those decisions is missed (see §7).
+When the machine is off, orders still arrive and are stored as `pending` (the sweep reviews them once n8n is back), and decisions are saved; their Shopify write-back is applied by the sync sweep once n8n is back (see §7).
 
 ## 5. Data model
 
@@ -208,7 +208,7 @@ The Edge Function and n8n use the `service_role` key server-side. The browser ne
 | LLM error or timeout (provider or gateway) | n8n retries 3 times with backoff; then the item is stored with verdict `unavailable`, the order goes to `needs_review` and a `workflow_errors` row is written |
 | Invalid model output | Treated as low confidence, routed to `needs_review` |
 | Shopify write-back fails | Retried 3 times (token request and GraphQL call); the result is logged in `shopify_sync_log` and failures in `workflow_errors` |
-| Pipeline offline when a decision is taken (online demo) | The decision is saved and the dashboard says Shopify was not updated. Not retried automatically yet: a sweep for decided orders without a successful sync is the next step |
+| Pipeline offline when a decision is taken, or the write-back failed | The decision is saved. A 5-minute sweep in `apply-decision` calls `orders_pending_sync` (decided orders with no successful sync since the decision, older than 2 min) and applies them again. Shopify failures are logged with `ok = false` (only the error message, never the request) and the sweep gives up after 5 of them |
 
 ## 8. Security
 
@@ -227,7 +227,7 @@ The Edge Function and n8n use the `service_role` key server-side. The browser ne
 | 1 | Schema + RLS, Edge Function, Shopify webhook simulator, TDD | Done |
 | 2 | n8n workflows (review, sweep, apply-decision, error handler), prompt v1 + evaluation set | Done (prompt v2 after the evaluation found a prompt-injection gap) |
 | 3 | Dashboard (auth, brand filter, review queue, decisions), deploy on Vercel | Done |
-| 4 | Real Shopify development store, metrics, hardening | Store done and verified end to end; metrics and write-back retry pending |
+| 4 | Real Shopify development store, metrics, hardening | Store and write-back retry done and verified end to end; metrics pending |
 
 ## 10. Decisions and open questions
 
