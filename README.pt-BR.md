@@ -51,7 +51,7 @@ flowchart TB
     subgraph N8N["n8n (Docker)"]
         direction LR
         WF1["Revisar pedido<br/>webhook + varredura a cada 5 min"]
-        WF2["Aplicar decisão<br/>tags + nota"]
+        WF2["Aplicar decisão<br/>token + tags + nota"]
         WF3["Tratar erros"]
     end
 
@@ -67,7 +67,7 @@ flowchart TB
     STORE -- "1 orders/create, assinado com HMAC" --> EF
     EF -- "2 verifica, deduplica, checa, persiste" --> DB
     EF -- "3 notifica" --> WF1
-    WF1 -- "4 claim + grava resultados" --> DB
+    WF1 -- "4 claim, grava resultados e falhas da IA" --> DB
     WF1 -- "5 pedido de revisão" --> GW
     GW --> CODEX
     GW -.-> CLAUDE
@@ -75,9 +75,10 @@ flowchart TB
     OPS --> UI
     UI -- "6b lê + decide, JWT do usuário" --> DB
     UI -- "7 decisão tomada" --> WF2
-    WF2 -- "8 tags + nota" --> STORE
-    WF1 -. "falhas" .-> WF3
-    WF2 -. "falhas" .-> WF3
+    WF2 -- "8 lê o pedido, registra o sync" --> DB
+    WF2 -- "9 token de acesso, depois tags + nota" --> STORE
+    WF1 -. "execução quebrou" .-> WF3
+    WF2 -. "execução quebrou" .-> WF3
     WF3 -- "workflow_errors" --> DB
 ```
 
@@ -119,13 +120,14 @@ sequenceDiagram
 
     S->>EF: POST orders/create (HMAC)
     EF->>EF: verifica HMAC, ignora se o webhook id já foi visto
+    Note over EF: loja desconhecida ou nenhum item personalizado: 200, nada a revisar
     EF->>DB: upsert do pedido + itens com verificações determinísticas
+    EF-)N: notify(order_id), em segundo plano
     EF-->>S: 200 accepted
-    EF-)N: notify(order_id)
 
     N->>DB: claim_orders_for_review(order_id)
     Note over N,DB: FOR UPDATE SKIP LOCKED, status de pending para reviewing
-    DB-->>N: pedido, itens, verificações, regras do produto
+    DB-->>N: pedido, itens, verificações, charset, limiar da marca
 
     loop cada item personalizado
         N->>GW: pedido de revisão (prompt vN + schema JSON)
@@ -136,9 +138,13 @@ sequenceDiagram
     end
 
     N->>DB: save_review_results (uma transação)
+    opt IA indisponível para algum item
+        N->>DB: workflow_errors
+    end
 
     alt verificações ok, veredito ok, confiança no limiar da marca ou acima
         N->>N: webhook apply-decision
+        N->>S: token de acesso (client credentials)
         N->>S: tagsAdd personalisation-ok + nota
         N->>DB: shopify_sync_log
     else algo sinalizado, incerto ou com falha
@@ -149,9 +155,11 @@ sequenceDiagram
         UI->>DB: decide_review (papel e regras do produto conferidos de novo)
         DB-->>UI: pedido aprovado ou retido
         UI->>N: webhook apply-decision
-        N->>S: tags + nota com o texto final
+        Note over UI,N: n8n fora do ar: a decisão continua salva e o painel avisa que o Shopify não foi atualizado
+        N->>S: token de acesso, depois tags + nota com o texto final
         N->>DB: shopify_sync_log
     end
+    Note over S,N: modo live só para SHOPIFY_STORE_DOMAIN, as outras marcas usam simulação
 
     opt n8n fora do ar quando o webhook chegou
         N->>DB: varredura a cada 5 min pega pedidos pendentes há mais de 2 min ou presos em revisão há mais de 10 min

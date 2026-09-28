@@ -49,7 +49,7 @@ flowchart TB
     subgraph N8N["n8n (Docker)"]
         direction LR
         WF1["Review order<br/>webhook + 5-min sweep"]
-        WF2["Apply decision<br/>tags + note"]
+        WF2["Apply decision<br/>token + tags + note"]
         WF3["Error handler"]
     end
 
@@ -65,7 +65,7 @@ flowchart TB
     STORE -- "1 orders/create, HMAC signed" --> EF
     EF -- "2 verify, dedupe, checks, persist" --> DB
     EF -- "3 notify" --> WF1
-    WF1 -- "4 claim + save results" --> DB
+    WF1 -- "4 claim, save results, log AI failures" --> DB
     WF1 -- "5 review request" --> GW
     GW --> CODEX
     GW -.-> CLAUDE
@@ -73,9 +73,10 @@ flowchart TB
     OPS --> UI
     UI -- "6b read + decide, user JWT" --> DB
     UI -- "7 decision taken" --> WF2
-    WF2 -- "8 tags + note" --> STORE
-    WF1 -. "failures" .-> WF3
-    WF2 -. "failures" .-> WF3
+    WF2 -- "8 read order, log sync" --> DB
+    WF2 -- "9 access token, then tags + note" --> STORE
+    WF1 -. "crash" .-> WF3
+    WF2 -. "crash" .-> WF3
     WF3 -- "workflow_errors" --> DB
 ```
 
@@ -117,13 +118,14 @@ sequenceDiagram
 
     S->>EF: POST orders/create (HMAC)
     EF->>EF: verify HMAC, skip if webhook id already seen
+    Note over EF: unknown shop or no personalised items: 200, nothing to review
     EF->>DB: upsert order + items with deterministic checks
+    EF-)N: notify(order_id), in the background
     EF-->>S: 200 accepted
-    EF-)N: notify(order_id)
 
     N->>DB: claim_orders_for_review(order_id)
     Note over N,DB: FOR UPDATE SKIP LOCKED, status pending to reviewing
-    DB-->>N: order, items, checks, product rules
+    DB-->>N: order, items, checks, charset, brand threshold
 
     loop each personalised item
         N->>GW: review request (prompt vN + JSON schema)
@@ -134,9 +136,13 @@ sequenceDiagram
     end
 
     N->>DB: save_review_results (one transaction)
+    opt AI unavailable for an item
+        N->>DB: workflow_errors
+    end
 
     alt checks passed, verdict ok, confidence at or above brand threshold
         N->>N: apply-decision webhook
+        N->>S: access token (client credentials)
         N->>S: tagsAdd personalisation-ok + note
         N->>DB: shopify_sync_log
     else anything flagged, uncertain or failed
@@ -147,9 +153,11 @@ sequenceDiagram
         UI->>DB: decide_review (role and product rules re-checked)
         DB-->>UI: order approved or on hold
         UI->>N: apply-decision webhook
-        N->>S: tags + note with the final text
+        Note over UI,N: n8n unreachable: the decision stays saved and the dashboard says Shopify was not updated
+        N->>S: access token, then tags + note with the final text
         N->>DB: shopify_sync_log
     end
+    Note over S,N: live mode only for SHOPIFY_STORE_DOMAIN, other brands use a mock
 
     opt n8n unreachable when the webhook arrived
         N->>DB: 5-minute sweep claims orders pending over 2 min or stuck reviewing over 10 min

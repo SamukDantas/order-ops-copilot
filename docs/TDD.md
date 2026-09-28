@@ -53,17 +53,19 @@ flowchart LR
     SHOP[Shopify store<br/>orders/create webhook] -->|HMAC signed| EF[Supabase Edge Function<br/>shopify-webhook]
     EF -->|verify HMAC · dedupe · upsert| DB[(Supabase Postgres<br/>RLS by brand)]
     EF -->|notify order id| N8N_R[n8n: review-order]
-    SWEEP[n8n: sweep-pending<br/>every 5 min] -->|pending &gt; 2 min| N8N_R
+    SWEEP[review-order schedule<br/>every 5 min] -->|pending &gt; 2 min or reviewing &gt; 10 min| N8N_R
     N8N_R -->|prompt vN| GW[LLM gateway<br/>host]
     GW -->|LLM_PROVEDOR=codex| CODEX[Codex CLI<br/>codex exec, read-only]
     GW -.->|LLM_PROVEDOR=anthropic| CLAUDE[Claude API]
-    N8N_R -->|review + audit| DB
+    N8N_R -->|review + audit, AI failures| DB
     N8N_R -->|auto-approved| N8N_A[n8n: apply-decision]
     UI[Next.js dashboard<br/>Vercel] -->|user JWT, RLS| DB
     UI -->|decision| N8N_A
+    N8N_A -->|read order, sync log| DB
     N8N_A -->|token + tag + note| SHOP
-    N8N_R -. on failure .-> ERR[n8n: error-handler]
-    ERR --> DB
+    N8N_R -. crash .-> ERR[n8n: error handler]
+    N8N_A -. crash .-> ERR
+    ERR -->|workflow_errors| DB
 ```
 
 ### Why this split
