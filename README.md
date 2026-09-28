@@ -95,9 +95,9 @@ Both workflows are generated from code (`npm run workflows`) and imported by CLI
 
 ![n8n workflow "Revisar pedido": webhook and 5-minute schedule into claim, LLM review, routing, save, Shopify write-back and failure logging](docs/screenshots/n8n-review-order.png)
 
-**Apply decision:** fetches the decided order, builds tags and a note (including any text a reviewer corrected), then calls the Shopify Admin API in live mode or a mock in development, and logs the result either way.
+**Apply decision:** fetches the decided order, builds tags and a note (including any text a reviewer corrected), then, in live mode, requests a short-lived access token (client credentials) and calls the Shopify Admin API; in development it calls a mock. It logs the result either way.
 
-![n8n workflow "Aplicar decisão no Shopify": webhook, fetch order, build tags and note, live or mock Shopify call, log the sync](docs/screenshots/n8n-apply-decision.png)
+![n8n workflow "Aplicar decisão no Shopify": webhook, fetch order, build tags and note, live branch (access token, then tags and note) or mock, log the sync](docs/screenshots/n8n-apply-decision.png)
 
 A third workflow, **error handler**, is wired as the error workflow for both and writes every failure to `workflow_errors`.
 
@@ -197,7 +197,9 @@ Details in [docs/EVALS.md](docs/EVALS.md).
 - **Idempotency** by webhook id. Redeliveries return `duplicate`, and upserts never reset an order's status.
 - **Persist first, notify second.** The 5-minute sweep recovers orders if n8n was down, and reclaims runs that died mid-review.
 - **Retries** (3, with backoff) on the LLM and on the database write. After that the item fails safe to a human, and the error is written to `workflow_errors` by a dedicated n8n error workflow.
-- **Secrets** live only in `.env`, n8n credentials and Edge Function secrets. n8n webhooks and the LLM gateway require shared secrets, compared in constant time.
+- **Secrets** live only in `.env`, n8n credentials, Edge Function secrets and Vercel's sensitive variables. n8n webhooks and the LLM gateway require shared secrets, compared in constant time.
+- **Shopify access** uses a 24 h token from the client credentials grant, requested on every write-back and never stored. The app declares only order data and the customer's name as protected customer data.
+- **Tunnel** (online demo): an ngrok traffic policy lets only `POST` to the two n8n webhooks through; the n8n editor and API return 404.
 - **RLS on every table.** Workflow functions are executable by `service_role` only. `decide_review` re-checks the reviewer role, refuses to approve text that breaks product rules, and refuses edits over the character limit.
 
 ## Tech stack
@@ -216,7 +218,7 @@ Versions are the ones this project was built and verified with (September 2026).
 | [Docker](https://www.docker.com) + Compose | 29.6 + Compose 5.3 | Local Supabase stack and n8n |
 | [Supabase](https://supabase.com) CLI | 2.118 | Local stack, migrations, function deploy, secrets |
 | [PostgreSQL](https://www.postgresql.org) | 17.6 (Supabase) | Data, Row Level Security, workflow functions |
-| [n8n](https://n8n.io) | 2.40 (Docker image) | Orchestration; workflows generated from code |
+| [n8n](https://n8n.io) | 2.40.7 (pinned Docker image) | Orchestration; workflows generated from code |
 | [ngrok](https://ngrok.com) agent | 3.37 | Fixed-domain tunnel exposing only the n8n webhooks |
 | [Vercel](https://vercel.com) | region `lhr1` | Dashboard hosting, next to Supabase in London |
 
@@ -266,7 +268,7 @@ Versions are the ones this project was built and verified with (September 2026).
 
 ## Running locally
 
-Prerequisites: Docker, Node 22+, Deno, and the [Codex CLI](https://github.com/openai/codex) logged in once (`codex`).
+Prerequisites: Docker, Node 22.18+ (24 recommended), Deno 2, and the [Codex CLI](https://github.com/openai/codex) logged in once (`codex`). The real-store setup also needs the [ngrok agent](https://ngrok.com/download).
 
 ```bash
 npm install && npm install --prefix web
@@ -298,7 +300,23 @@ To use Claude instead of Codex, set `LLM_PROVEDOR=anthropic` and `ANTHROPIC_API_
 
 ## Real Shopify development store
 
-Besides the signed-webhook simulator, the pipeline runs against a real development store (`order-ops-copilot-demo.myshopify.com`) and an app created in the Shopify Dev Dashboard:
+Besides the signed-webhook simulator, the pipeline runs against a real development store (`order-ops-copilot-demo.myshopify.com`) and an app created in the Shopify Dev Dashboard. Online, the pieces are split like this:
+
+```mermaid
+flowchart LR
+    SHOP["Shopify<br/>development store"] -->|orders/create| EF["Edge Function<br/>Supabase, London"]
+    EF --> DB[("Postgres<br/>Supabase, London")]
+    UI["Dashboard<br/>Vercel lhr1"] --> DB
+    EF -->|review-order| T{{"ngrok<br/>fixed domain"}}
+    UI -->|apply-decision| T
+    subgraph HOST["Author's machine"]
+        N8N["n8n"] --> GW["LLM gateway"] --> CODEX["Codex CLI"]
+    end
+    T --> N8N
+    N8N --> DB
+    N8N -->|tags + note| SHOP
+```
+
 
 1. **Access token:** the app and the store belong to the same organization, so the token comes from the *client credentials grant* (client ID + secret, no interactive OAuth). It lasts 24 h, so nothing long-lived is stored: the write-back workflow asks for a fresh token each time.
 2. **Webhook:** `npm run shopify -- webhook <url>` subscribes `orders/create` to the Edge Function in the online project. Shopify signs it with the app's client secret, which is the only value the function needs.
@@ -315,13 +333,13 @@ docs/                 TDD, evaluation log, screenshots
 supabase/
   migrations/         schema, RLS, workflow and decision functions
   functions/          shopify-webhook + shared checks and HMAC (Deno)
-lib/                  review request, routing logic, LLM provider (single source for n8n and evals)
+lib/                  review request, routing logic, LLM provider, Shopify Admin client (single source for n8n and evals)
 services/             LLM gateway
 prompts/              versioned prompts + output schema
-n8n/                  docker-compose + generated workflows
+n8n/                  docker-compose (pinned n8n), generated workflows, tunnel traffic policy
 evals/                labelled cases
 fixtures/shopify/     realistic orders/create payloads
-scripts/              setup, workflow generator, simulator, eval, seeds, screenshots
+scripts/              setup, workflow generator, simulator, real store (shopify), n8n target, tunnel, eval, seeds, screenshots
 tests/                RLS integration tests
 web/                  Next.js dashboard
 ```

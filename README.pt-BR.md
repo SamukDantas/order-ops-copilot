@@ -97,9 +97,9 @@ Os dois workflows são gerados a partir do código (`npm run workflows`) e impor
 
 ![Workflow n8n "Revisar pedido": webhook e agendamento de 5 minutos levando a claim, revisão pelo LLM, roteamento, gravação, write-back no Shopify e registro de falhas](docs/screenshots/n8n-review-order.png)
 
-**Aplicar decisão no Shopify:** busca o pedido decidido, monta as tags e a nota (incluindo o texto corrigido pelo revisor, se houver) e chama a Admin API do Shopify em modo live, ou uma simulação em desenvolvimento. Nos dois casos, registra o resultado.
+**Aplicar decisão no Shopify:** busca o pedido decidido e monta as tags e a nota (incluindo o texto corrigido pelo revisor, se houver). Em modo live, pede um token de acesso de curta duração (client credentials) e chama a Admin API do Shopify; em desenvolvimento, chama uma simulação. Nos dois casos, registra o resultado.
 
-![Workflow n8n "Aplicar decisão no Shopify": webhook, busca do pedido, montagem de tags e nota, chamada live ou simulada ao Shopify, registro do sync](docs/screenshots/n8n-apply-decision.png)
+![Workflow n8n "Aplicar decisão no Shopify": webhook, busca do pedido, montagem de tags e nota, ramo live (token de acesso, depois tags e nota) ou simulado, registro do sync](docs/screenshots/n8n-apply-decision.png)
 
 Um terceiro workflow, **Tratar erros**, é configurado como workflow de erro dos dois e grava cada falha em `workflow_errors`.
 
@@ -199,7 +199,9 @@ Detalhes em [docs/EVALS.md](docs/EVALS.md) (em inglês).
 - **Idempotência** pelo webhook id. Reentregas voltam como `duplicate`, e os upserts nunca reiniciam o status de um pedido.
 - **Persistir primeiro, notificar depois.** A varredura a cada 5 minutos recupera pedidos se o n8n estava fora e retoma execuções que morreram no meio da revisão.
 - **Retentativas** (3, com espera crescente) no LLM e na gravação no banco. Depois disso o item vai com segurança para uma pessoa, e o erro é gravado em `workflow_errors` por um workflow de erros dedicado.
-- **Segredos** só no `.env`, nas credenciais do n8n e nos secrets das Edge Functions. Os webhooks do n8n e o gateway de LLM exigem segredo compartilhado, comparado em tempo constante.
+- **Segredos** só no `.env`, nas credenciais do n8n, nos secrets das Edge Functions e nas variáveis sensíveis da Vercel. Os webhooks do n8n e o gateway de LLM exigem segredo compartilhado, comparado em tempo constante.
+- **Acesso ao Shopify** por um token de 24 h do client credentials grant, pedido a cada write-back e nunca guardado. O app declara como dados protegidos só os dados do pedido e o nome do cliente.
+- **Túnel** (demo online): uma traffic policy do ngrok só deixa passar `POST` nos dois webhooks do n8n; o editor e a API do n8n respondem 404.
 - **RLS em todas as tabelas.** As funções do workflow só podem ser executadas pela `service_role`. A `decide_review` confere de novo o papel do revisor, recusa aprovar texto que viola as regras do produto e recusa edições acima do limite de caracteres.
 
 ## Stack
@@ -218,7 +220,7 @@ As versões são as usadas para construir e validar o projeto (setembro de 2026)
 | [Docker](https://www.docker.com) + Compose | 29.6 + Compose 5.3 | Supabase local e n8n |
 | CLI do [Supabase](https://supabase.com) | 2.118 | Stack local, migrations, deploy de funções, secrets |
 | [PostgreSQL](https://www.postgresql.org) | 17.6 (Supabase) | Dados, Row Level Security, funções do workflow |
-| [n8n](https://n8n.io) | 2.40 (imagem Docker) | Orquestração; workflows gerados por código |
+| [n8n](https://n8n.io) | 2.40.7 (imagem Docker fixada) | Orquestração; workflows gerados por código |
 | Agente do [ngrok](https://ngrok.com) | 3.37 | Túnel com domínio fixo que expõe só os webhooks do n8n |
 | [Vercel](https://vercel.com) | região `lhr1` | Hospedagem do painel, ao lado do Supabase em Londres |
 
@@ -268,7 +270,7 @@ As versões são as usadas para construir e validar o projeto (setembro de 2026)
 
 ## Rodando localmente
 
-Pré-requisitos: Docker, Node 22+, Deno e o [Codex CLI](https://github.com/openai/codex) com login feito uma vez (`codex`).
+Pré-requisitos: Docker, Node 22.18+ (24 recomendado), Deno 2 e o [Codex CLI](https://github.com/openai/codex) com login feito uma vez (`codex`). O ambiente com a loja real também precisa do [agente do ngrok](https://ngrok.com/download).
 
 ```bash
 npm install && npm install --prefix web
@@ -300,7 +302,23 @@ Para usar o Claude em vez do Codex, defina `LLM_PROVEDOR=anthropic` e `ANTHROPIC
 
 ## Loja de desenvolvimento real do Shopify
 
-Além do simulador de webhooks assinados, o pipeline roda contra uma loja de desenvolvimento real (`order-ops-copilot-demo.myshopify.com`) e um app criado no Dev Dashboard do Shopify:
+Além do simulador de webhooks assinados, o pipeline roda contra uma loja de desenvolvimento real (`order-ops-copilot-demo.myshopify.com`) e um app criado no Dev Dashboard do Shopify. Online, as peças ficam assim:
+
+```mermaid
+flowchart LR
+    SHOP["Shopify<br/>loja de desenvolvimento"] -->|orders/create| EF["Edge Function<br/>Supabase, Londres"]
+    EF --> DB[("Postgres<br/>Supabase, Londres")]
+    UI["Painel<br/>Vercel lhr1"] --> DB
+    EF -->|review-order| T{{"ngrok<br/>domínio fixo"}}
+    UI -->|apply-decision| T
+    subgraph HOST["Máquina do autor"]
+        N8N["n8n"] --> GW["Gateway de LLM"] --> CODEX["Codex CLI"]
+    end
+    T --> N8N
+    N8N --> DB
+    N8N -->|tags + nota| SHOP
+```
+
 
 1. **Token de acesso:** o app e a loja são da mesma organização, então o token sai do *client credentials grant* (client ID + secret, sem OAuth interativo). Ele vale 24 h, por isso nada de longa duração fica guardado: o workflow de write-back pede um token novo a cada execução.
 2. **Webhook:** `npm run shopify -- webhook <url>` assina `orders/create` na Edge Function do projeto online. O Shopify assina com o client secret do app, o único valor de que a função precisa.
@@ -317,13 +335,13 @@ docs/                 TDD, histórico de avaliação, capturas de tela
 supabase/
   migrations/         schema, RLS, funções do workflow e de decisão
   functions/          shopify-webhook + verificações e HMAC compartilhados (Deno)
-lib/                  requisição de revisão, roteamento, provedor de LLM (fonte única para o n8n e o eval)
+lib/                  requisição de revisão, roteamento, provedor de LLM, cliente da Admin API do Shopify (fonte única para o n8n e o eval)
 services/             gateway de LLM
 prompts/              prompts versionados + schema de saída
-n8n/                  docker-compose + workflows gerados
+n8n/                  docker-compose (n8n fixado), workflows gerados, política de tráfego do túnel
 evals/                casos rotulados
 fixtures/shopify/     payloads realistas de orders/create
-scripts/              setup, gerador de workflows, simulador, eval, seeds, capturas
+scripts/              setup, gerador de workflows, simulador, loja real (shopify), alvo do n8n, túnel, eval, seeds, capturas
 tests/                testes de integração de RLS
 web/                  painel Next.js
 ```

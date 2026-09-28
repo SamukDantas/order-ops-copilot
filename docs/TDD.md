@@ -3,9 +3,9 @@
 | | |
 |---|---|
 | **Author** | Samuel Dantas |
-| **Status** | Approved for build (v1) |
-| **Date** | 2026-09-26 |
-| **Stack** | Shopify · Supabase (Postgres, RLS, Edge Functions) · n8n · LLM gateway (Codex CLI or Claude API) · Next.js on Vercel |
+| **Status** | Implemented. Running against a real Shopify development store (prompt v2) |
+| **Date** | 2026-09-26 · last updated 2026-09-27 |
+| **Stack** | Shopify · Supabase (Postgres, RLS, Edge Functions) · n8n · LLM gateway (Codex CLI or Claude API) · Next.js on Vercel · ngrok |
 
 ---
 
@@ -61,7 +61,7 @@ flowchart LR
     N8N_R -->|auto-approved| N8N_A[n8n: apply-decision]
     UI[Next.js dashboard<br/>Vercel] -->|user JWT, RLS| DB
     UI -->|decision| N8N_A
-    N8N_A -->|tag + note| SHOP
+    N8N_A -->|token + tag + note| SHOP
     N8N_R -. on failure .-> ERR[n8n: error-handler]
     ERR --> DB
 ```
@@ -70,34 +70,68 @@ flowchart LR
 
 | Component | Responsibility | Reason |
 |---|---|---|
-| **Edge Function** | Receive the webhook, verify the HMAC, deduplicate, persist | Shopify requires a 200 response within 5 s and retries on failure. Persisting first means nothing is lost even if n8n or Claude is down. |
+| **Edge Function** | Receive the webhook, verify the HMAC, deduplicate, persist | Shopify requires a 200 response within 5 s and retries on failure. Persisting first means nothing is lost even if n8n or the LLM is down. |
 | **n8n** | Orchestration: AI call, branching, retries, write-back to Shopify | The business team can see the flow, retry runs and change branching without a deploy. |
 | **Postgres + RLS** | Source of truth and access control | One policy layer protects the dashboard, the API and any future tool. |
 | **Next.js dashboard** | Human-in-the-loop review | Holds no privileged keys: it acts with the signed-in user's JWT, so RLS applies. |
+
+### Deployment
+
+The same code runs in two setups:
+
+- **Local:** Supabase, the Edge Function and n8n in Docker, the gateway and the Codex CLI on the host, and the signed-webhook simulator (`npm run simular`) playing the store.
+- **Online demo:** the dashboard on Vercel and the database and Edge Function on Supabase (both in London), connected to a real development store (`order-ops-copilot-demo.myshopify.com`). The AI pipeline still runs on the author's machine: `npm run n8n:alvo -- nuvem` points n8n at the online database, and `npm run tunel` exposes only the two n8n webhooks through ngrok.
+
+```mermaid
+flowchart LR
+    SHOP[Shopify<br/>development store] -->|orders/create| EF[Edge Function<br/>Supabase, London]
+    EF --> DB[(Postgres<br/>Supabase, London)]
+    UI[Dashboard<br/>Vercel lhr1] --> DB
+    EF -->|review-order| T{{ngrok<br/>fixed domain}}
+    UI -->|apply-decision| T
+    subgraph HOST[Author's machine]
+        N8N[n8n] --> GW[LLM gateway] --> CODEX[Codex CLI]
+    end
+    T --> N8N
+    N8N --> DB
+    N8N -->|tags + note| SHOP
+```
+
+When the machine is off, orders still arrive and are stored as `pending` (the sweep reviews them once n8n is back), and decisions are saved; only the Shopify write-back of those decisions is missed (see §7).
 
 ## 5. Data model
 
 ```mermaid
 erDiagram
     brands ||--o{ brand_members : has
+    brands ||--o{ product_rules : defines
     brands ||--o{ orders : receives
     orders ||--o{ order_items : contains
+    orders ||--o{ shopify_sync_log : "written back"
     order_items ||--o{ reviews : "reviewed by"
     reviews ||--o{ review_decisions : "decided by"
     brands {
       uuid id PK
       text name
       text shop_domain UK
+      numeric auto_approve_min_confidence
     }
     brand_members {
       uuid brand_id FK
       uuid user_id FK
       text role "viewer | reviewer | admin"
     }
+    product_rules {
+      uuid brand_id FK
+      text sku
+      int max_chars
+      text charset "engraving | print | embroidery"
+    }
     orders {
       uuid id PK
       uuid brand_id FK
       bigint shopify_order_id
+      text customer_first_name
       text status "pending | reviewing | auto_approved | needs_review | approved | rejected | error"
       jsonb raw
     }
@@ -106,24 +140,34 @@ erDiagram
       uuid order_id FK
       text sku
       jsonb personalisation
-      int max_chars
+      jsonb checks "deterministic, at ingestion"
     }
     reviews {
       uuid id PK
       uuid order_item_id FK
-      text verdict "ok | fix | reject"
+      text verdict "ok | fix | reject | unavailable"
       text[] issues
-      text suggested_text
+      jsonb suggested_text "[{name, value}]"
+      text customer_message
       numeric confidence
       text model
       text prompt_version
+      int latency_ms
     }
     review_decisions {
       uuid id PK
       uuid review_id FK
       uuid decided_by FK
       text action "approve | edit | reject"
-      text final_text
+      jsonb final_text "[{name, value}]"
+      text note
+    }
+    shopify_sync_log {
+      uuid id PK
+      uuid order_id FK
+      text mode "mock | live"
+      text[] tags
+      boolean ok
     }
 ```
 
@@ -133,11 +177,11 @@ Additional tables: `webhook_events` (idempotency via `X-Shopify-Webhook-Id`) and
 
 | Table | Policy |
 |---|---|
-| `brands`, `orders`, `order_items`, `reviews` | `SELECT` only when `auth.uid()` is a member of the row's brand |
-| `review_decisions` | `INSERT` only by members with role `reviewer` or `admin` on the brand, and `decided_by = auth.uid()` |
+| `brands`, `product_rules`, `orders`, `order_items`, `reviews`, `shopify_sync_log` | `SELECT` only when `auth.uid()` is a member of the row's brand |
+| `review_decisions` | `SELECT` for brand members; `INSERT` only by members with role `reviewer` or `admin` on the brand, and `decided_by = auth.uid()`. The dashboard decides through `decide_review`, which checks the role again and refuses text that breaks the product rules |
 | `webhook_events`, `workflow_errors` | No policies: `service_role` only |
 
-The Edge Function and n8n use the `service_role` key server-side. The browser never holds it.
+The Edge Function and n8n use the `service_role` key server-side. The browser never holds it. The workflow functions (`claim_orders_for_review`, `save_review_results`) can only be executed by `service_role`.
 
 ## 6. AI design
 
@@ -145,12 +189,12 @@ The Edge Function and n8n use the `service_role` key server-side. The browser ne
   - `codex` (default): the Codex CLI in headless mode (`codex exec`) on the ChatGPT account login, following the same method as the internal `squad-engenharia` project: read-only sandbox in an empty temp dir, machine config and rules ignored, ephemeral, JSONL output where `turn.failed` counts as failure even on exit 0, prompt on stdin, JSON schema enforced with `--output-schema`, and a fallback model when the primary one is refused for plan, limit or capacity reasons. Default model: `gpt-5.6-luna`, suited to short, high-volume tasks, with `gpt-5.6-terra` as the fallback.
   - `anthropic`: the Claude Messages API through the official SDK (`claude-opus-5`, structured outputs, server-side refusal fallback). Needs an API key with credit.
   Switching provider changes an environment variable, not the workflow.
-- **Output contract:** a single JSON object validated in n8n before anything is written:
-  `{ verdict: "ok" | "fix" | "reject", issues: string[], suggested_text: string | null, confidence: 0..1, customer_message: string | null }`
-- **Prompts are versioned files** in `prompts/` (e.g. `personalisation-review.v1.md`). The version is stored with every review.
-- **Deterministic checks run first** (character limit, allowed character set). The model gets their results as context and never overrides a hard limit.
-- **Fail safe:** invalid JSON, a timeout, or `confidence < 0.7` all route the item to `needs_review`. Uncertainty always reaches a human.
-- **Evaluation set:** `prompts/evals/*.json` holds labelled cases (typos, emoji, profanity, over-limit, clean). `npm run eval` reports precision and recall per prompt version. A prompt change ships only if it does not regress the evaluation set.
+- **Output contract** (`prompts/review-schema.json`): a single JSON object validated in n8n before anything is written:
+  `{ verdict: "ok" | "fix" | "reject", issues: string[], suggested_text: {name, value}[] | null, confidence: 0..1, customer_message: string | null }`
+- **Prompts are versioned files** in `prompts/` (currently `personalisation-review.v2.md`). The version is stored with every review.
+- **Deterministic checks run first** (character limit and charset per SKU, emoji, whitespace, text addressed to the reviewer or the system). The model gets their results as context and never overrides a hard limit: a failed check is never auto-approved.
+- **Fail safe:** invalid JSON, a timeout, a refusal, or a confidence below the brand threshold (`auto_approve_min_confidence`, never below 0.7) all route the item to `needs_review`. Uncertainty always reaches a human.
+- **Evaluation set:** `evals/cases.json` holds 24 labelled cases (typos, emoji, profanity, over-limit, prompt injection, clean). `npm run eval` reports exact accuracy, flag precision and recall, and unsafe auto-approvals after full routing. A prompt change ships only if it does not regress the set; see [EVALS.md](EVALS.md).
 
 ## 7. Reliability and error handling
 
@@ -161,26 +205,37 @@ The Edge Function and n8n use the `service_role` key server-side. The browser ne
 | n8n unreachable | Order stays `pending`; `sweep-pending` picks it up within 5 minutes |
 | LLM error or timeout (provider or gateway) | n8n retries 3 times with backoff; then the item is stored with verdict `unavailable`, the order goes to `needs_review` and a `workflow_errors` row is written |
 | Invalid model output | Treated as low confidence, routed to `needs_review` |
-| Shopify write-back fails | Retried; the failure is logged in `workflow_errors` |
+| Shopify write-back fails | Retried 3 times (token request and GraphQL call); the result is logged in `shopify_sync_log` and failures in `workflow_errors` |
+| Pipeline offline when a decision is taken (online demo) | The decision is saved and the dashboard says Shopify was not updated. Not retried automatically yet: a sweep for decided orders without a successful sync is the next step |
 
 ## 8. Security
 
 - Shopify HMAC verified with a constant-time comparison over the raw body.
-- Secrets (Shopify, LLM gateway, `service_role`) live only in Edge Function secrets, n8n credentials and the host `.env`. The gateway requires a shared secret and compares it in constant time.
-- The n8n webhooks require a shared secret header.
+- **Shopify access:** the app and the development store belong to the same organization, so the Admin API token comes from the client credentials grant. It lasts 24 h and is requested on every write-back instead of being stored. Only `SHOPIFY_STORE_DOMAIN` runs in live mode; other brands stay in mock.
+- **Protected customer data:** the app declares only order data and the customer's name. Email, phone and address are not requested.
+- Secrets (Shopify client secret, LLM gateway, `service_role`) live only in Edge Function secrets, n8n credentials, the host `.env` and Vercel's sensitive environment variables. The gateway requires a shared secret and compares it in constant time.
+- The n8n webhooks require a shared secret header. When exposed through the tunnel, an ngrok traffic policy lets only `POST` to the two webhooks through; the n8n editor and API return 404.
 - The dashboard uses Supabase Auth, and every query goes through RLS.
 - PII is minimised: only the customer's first name and the order fields needed for review are stored in structured columns.
 
 ## 9. Delivery plan
 
-| Sprint | Scope |
-|---|---|
-| 1 | Schema + RLS, Edge Function, Shopify webhook simulator, TDD |
-| 2 | n8n workflows (review, sweep, apply-decision, error handler), prompt v1 + evaluation set |
-| 3 | Dashboard (auth, brand filter, review queue, decisions), deploy on Vercel |
-| 4 | Real Shopify development store, metrics, hardening |
+| Sprint | Scope | Status |
+|---|---|---|
+| 1 | Schema + RLS, Edge Function, Shopify webhook simulator, TDD | Done |
+| 2 | n8n workflows (review, sweep, apply-decision, error handler), prompt v1 + evaluation set | Done (prompt v2 after the evaluation found a prompt-injection gap) |
+| 3 | Dashboard (auth, brand filter, review queue, decisions), deploy on Vercel | Done |
+| 4 | Real Shopify development store, metrics, hardening | Store done and verified end to end; metrics and write-back retry pending |
 
-## 10. Open questions
+## 10. Decisions and open questions
 
-- Per-product character limits: read from product metafields (v2) or keep a static SKU map (v1)?
-- Should auto-approval thresholds differ per brand?
+**Decided**
+
+- Per-product character limits: a static SKU map (`product_rules`) for v1. Reading them from product metafields is the v2 path.
+- Auto-approval thresholds differ per brand (`brands.auto_approve_min_confidence`), with 0.7 as a floor.
+- LLM provider: Codex CLI by default, Claude Messages API as a drop-in alternative behind the same gateway.
+
+**Open**
+
+- Where to host n8n and the gateway for an always-on pipeline, and which hosted model provider replaces the personal Codex login there.
+- Store personalisation as an ordered list of `{name, value}` instead of a `jsonb` object, so the field order the customer saw is kept.
