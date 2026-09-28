@@ -13,7 +13,7 @@ export default async function OrderPage(props: PageProps<"/orders/[id]">) {
 
   const { data: order } = await supabase
     .from("orders")
-    .select(`id, order_number, customer_first_name, currency, total_price, status, created_at, brand_id,
+    .select(`id, order_number, customer_first_name, currency, total_price, status, status_changed_at, created_at, brand_id,
       brands(name),
       order_items(id, title, sku, quantity, personalisation, checks,
         reviews(id, verdict, issues, suggested_text, customer_message, confidence, model, prompt_version, created_at,
@@ -28,6 +28,9 @@ export default async function OrderPage(props: PageProps<"/orders/[id]">) {
   const canDecide = order.status === "needs_review" && (membership?.role === "reviewer" || membership?.role === "admin");
   const brand = Array.isArray(order.brands) ? order.brands[0] : order.brands;
   const sync = [...(order.shopify_sync_log ?? [])].sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+  // Decidido, mas sem write-back bem-sucedido depois da decisão: a varredura do n8n reenvia
+  const decided = ["auto_approved", "approved", "rejected"].includes(order.status);
+  const syncPending = decided && !(sync?.ok && sync.created_at >= order.status_changed_at);
 
   return (
     <>
@@ -50,6 +53,11 @@ export default async function OrderPage(props: PageProps<"/orders/[id]">) {
         {sync && (
           <p className="text-xs text-muted">
             Shopify {sync.mode === "mock" ? "(mock)" : ""}: tags {sync.tags.join(", ")} {sync.ok ? "applied" : "failed"}.
+          </p>
+        )}
+        {syncPending && (
+          <p className="text-xs text-muted">
+            Shopify update pending: retried automatically every 5 minutes while the pipeline is online.
           </p>
         )}
 

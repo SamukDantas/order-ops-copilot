@@ -14,7 +14,7 @@ Um varejista D2C multimarca vende produtos personalizados feitos sob encomenda (
 
 A conta demo é revisora nas três marcas. A demo online roda o painel na Vercel e no Supabase (Londres) com pedidos que a IA revisou de verdade: 2 aprovados automaticamente e 5 aguardando uma pessoa, incluindo a tentativa de injeção de prompt. Os dados da demo são resetados de tempos em tempos.
 
-A terceira marca, **Order Ops Demo Store**, é uma [loja de desenvolvimento real do Shopify](#loja-de-desenvolvimento-real-do-shopify): os pedidos chegam pelo webhook `orders/create` de verdade, e a decisão tomada na demo grava tags e nota no pedido pela Admin API. O pipeline de IA (n8n, gateway de LLM e Codex CLI) roda na máquina do autor, atrás de um túnel, então o ciclo com a loja real funciona enquanto ela está ligada; fora disso, a decisão é salva e o painel avisa que o Shopify não foi atualizado.
+A terceira marca, **Order Ops Demo Store**, é uma [loja de desenvolvimento real do Shopify](#loja-de-desenvolvimento-real-do-shopify): os pedidos chegam pelo webhook `orders/create` de verdade, e a decisão tomada na demo grava tags e nota no pedido pela Admin API. O pipeline de IA (n8n, gateway de LLM e Codex CLI) roda na máquina do autor, atrás de um túnel, então o ciclo com a loja real funciona enquanto ela está ligada; fora disso, a decisão é salva e chega ao Shopify automaticamente quando ela volta.
 
 | Fila de revisão | Correção sugerida pela IA |
 |---|---|
@@ -51,7 +51,7 @@ flowchart TB
     subgraph N8N["n8n (Docker)"]
         direction LR
         WF1["Revisar pedido<br/>webhook + varredura a cada 5 min"]
-        WF2["Aplicar decisão<br/>token + tags + nota"]
+        WF2["Aplicar decisão<br/>token + tags + nota<br/>+ reenvio a cada 5 min"]
         WF3["Tratar erros"]
     end
 
@@ -98,9 +98,9 @@ Os dois workflows são gerados a partir do código (`npm run workflows`) e impor
 
 ![Workflow n8n "Revisar pedido": webhook e agendamento de 5 minutos levando a claim, revisão pelo LLM, roteamento, gravação, write-back no Shopify e registro de falhas](docs/screenshots/n8n-review-order.png)
 
-**Aplicar decisão no Shopify:** busca o pedido decidido e monta as tags e a nota (incluindo o texto corrigido pelo revisor, se houver). Em modo live, pede um token de acesso de curta duração (client credentials) e chama a Admin API do Shopify; em desenvolvimento, chama uma simulação. Nos dois casos, registra o resultado.
+**Aplicar decisão no Shopify:** busca o pedido decidido e monta as tags e a nota (incluindo o texto corrigido pelo revisor, se houver). Em modo live, pede um token de acesso de curta duração (client credentials) e chama a Admin API do Shopify; em desenvolvimento, chama uma simulação. Nos dois casos, registra o resultado, inclusive as falhas. Uma segunda entrada, a varredura a cada 5 minutos, reaplica decisões sem sync bem-sucedido desde que foram tomadas (pipeline fora do ar ou falha no Shopify), até 5 tentativas com falha.
 
-![Workflow n8n "Aplicar decisão no Shopify": webhook, busca do pedido, montagem de tags e nota, ramo live (token de acesso, depois tags e nota) ou simulado, registro do sync](docs/screenshots/n8n-apply-decision.png)
+![Workflow n8n "Aplicar decisão no Shopify": webhook e varredura de reenvio a cada 5 minutos, busca do pedido, montagem de tags e nota, ramo live (token de acesso, depois tags e nota) ou simulado, registro do sync](docs/screenshots/n8n-apply-decision.png)
 
 Um terceiro workflow, **Tratar erros**, é configurado como workflow de erro dos dois e grava cada falha em `workflow_errors`.
 
@@ -155,7 +155,7 @@ sequenceDiagram
         UI->>DB: decide_review (papel e regras do produto conferidos de novo)
         DB-->>UI: pedido aprovado ou retido
         UI->>N: webhook apply-decision
-        Note over UI,N: n8n fora do ar: a decisão continua salva e o painel avisa que o Shopify não foi atualizado
+        Note over UI,N: n8n fora do ar: a decisão continua salva e a varredura de 5 min a aplica quando o n8n volta
         N->>S: token de acesso, depois tags + nota com o texto final
         N->>DB: shopify_sync_log
     end
@@ -163,6 +163,10 @@ sequenceDiagram
 
     opt n8n fora do ar quando o webhook chegou
         N->>DB: varredura a cada 5 min pega pedidos pendentes há mais de 2 min ou presos em revisão há mais de 10 min
+    end
+
+    opt decisão sem sync bem-sucedido (pipeline fora do ar, falha no Shopify)
+        N->>DB: varredura a cada 5 min: orders_pending_sync e apply-decision de novo (até 5 falhas)
     end
 ```
 
@@ -205,7 +209,7 @@ Detalhes em [docs/EVALS.md](docs/EVALS.md) (em inglês).
 
 - **HMAC do Shopify** verificado em tempo constante sobre o corpo bruto. Assinatura inválida recebe `401` e nada é gravado.
 - **Idempotência** pelo webhook id. Reentregas voltam como `duplicate`, e os upserts nunca reiniciam o status de um pedido.
-- **Persistir primeiro, notificar depois.** A varredura a cada 5 minutos recupera pedidos se o n8n estava fora e retoma execuções que morreram no meio da revisão.
+- **Persistir primeiro, notificar depois.** A varredura a cada 5 minutos recupera pedidos se o n8n estava fora e retoma execuções que morreram no meio da revisão. Uma segunda varredura reaplica decisões cujo write-back no Shopify nunca deu certo e desiste depois de 5 tentativas com falha.
 - **Retentativas** (3, com espera crescente) no LLM e na gravação no banco. Depois disso o item vai com segurança para uma pessoa, e o erro é gravado em `workflow_errors` por um workflow de erros dedicado.
 - **Segredos** só no `.env`, nas credenciais do n8n, nos secrets das Edge Functions e nas variáveis sensíveis da Vercel. Os webhooks do n8n e o gateway de LLM exigem segredo compartilhado, comparado em tempo constante.
 - **Acesso ao Shopify** por um token de 24 h do client credentials grant, pedido a cada write-back e nunca guardado. O app declara como dados protegidos só os dados do pedido e o nome do cliente.
@@ -358,7 +362,6 @@ web/                  painel Next.js
 
 ## Limitações conhecidas e próximos passos
 
-- **Reenvio do write-back:** uma decisão tomada com o pipeline fora do ar fica salva, mas a atualização no Shopify ainda não é reenviada automaticamente. Uma varredura de pedidos decididos sem sync bem-sucedido fecharia essa lacuna.
 - **Ordem dos campos:** a personalização é gravada como objeto `jsonb`, e o Postgres reordena as chaves. Ela deveria virar uma lista ordenada de `{name, value}`, formato que o resto do pipeline já usa.
 - **Limites por produto** vêm de uma tabela estática por SKU (`product_rules`). Uma versão futura deve lê-los dos metafields do Shopify.
 - **Pipeline completo online:** o painel, o banco e o endpoint de webhooks já estão no ar, e o pipeline de IA os atende a partir da máquina do autor por um túnel (veja [Loja de desenvolvimento real do Shopify](#loja-de-desenvolvimento-real-do-shopify)). Deixá-lo sempre ligado exige o n8n e o gateway de LLM num host pequeno, com um provedor hospedado no lugar do login pessoal do Codex.

@@ -39,7 +39,7 @@ export async function decide(formData: FormData) {
     if (wb.status === "sent") back("Decision saved and sent to Shopify.");
     if (wb.status === "disabled") back("Decision saved. Shopify write-back is disabled in this online demo (it runs in the full local setup).");
     // Na demo online o n8n roda na máquina do autor, atrás de um túnel: fora do ar, a decisão fica salva
-    back(`Decision saved, but Shopify was not updated: the pipeline (n8n) did not respond (${wb.status === "failed" ? wb.error : "unknown"}). In the online demo it runs on the author's machine and may be offline.`);
+    back(`Decision saved, but Shopify was not updated yet: the pipeline (n8n) did not respond (${wb.status === "failed" ? wb.error : "unknown"}). It is retried automatically every 5 minutes while the pipeline is online; in the online demo it runs on the author's machine.`);
   }
   back("Decision saved.");
 }

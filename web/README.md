@@ -27,7 +27,7 @@ Review dashboard for Order Ops Copilot: the queue of personalised orders, the AI
 - **Only the publishable key.** Every query runs with the signed-in user's JWT, so Row Level Security decides what each person sees. The `service_role` key never reaches this app.
 - **`proxy.ts`** refreshes the Supabase session on each request and sends signed-out users to `/login`. It is an optimistic check: the real authorization is RLS in the database.
 - **Decisions go through `decide_review`** (a Postgres function), which checks the reviewer role again and refuses text that breaks the product rules.
-- **Shopify write-back** runs in n8n, not here. After a decision the Server Action calls the n8n `apply-decision` webhook with a shared secret (`src/lib/n8n.ts`) and reports one of three outcomes: sent, disabled (no n8n configured) or failed (for example, the pipeline is offline). The decision is saved in every case.
+- **Shopify write-back** runs in n8n, not here. After a decision the Server Action calls the n8n `apply-decision` webhook with a shared secret (`src/lib/n8n.ts`) and reports one of three outcomes: sent, disabled (no n8n configured) or failed (for example, the pipeline is offline). The decision is saved in every case, and a failed write-back is retried by n8n every 5 minutes; the order page shows "Shopify update pending" until it succeeds.
 
 ## Environment
 
