@@ -3,13 +3,17 @@
 # o n8n alcança o host por host.docker.internal.
 services:
   n8n:
-    image: docker.n8n.io/n8nio/n8n:${N8N_VERSION:-latest}
+    # Versão fixada (validada com os workflows gerados); N8N_VERSION sobrescreve
+    image: docker.n8n.io/n8nio/n8n:${N8N_VERSION:-2.40.7}
     container_name: order-ops-n8n
     restart: unless-stopped
     ports:
       - "5678:5678"
     env_file:
       - ../.env
+      # Sobrescreve o Supabase quando o alvo é a nuvem (npm run n8n:alvo -- nuvem)
+      - path: ./.env.alvo
+        required: false
     environment:
       GENERIC_TIMEZONE: Europe/London
       TZ: Europe/London

@@ -12,7 +12,9 @@ Um varejista D2C multimarca vende produtos personalizados feitos sob encomenda (
 
 **https://order-ops-copilot.vercel.app** · login `demo@order-ops-copilot.dev` · senha `!UserTest30`
 
-A conta demo é revisora nas duas marcas. A demo online roda o painel na Vercel e no Supabase (Londres) com pedidos que a IA revisou de verdade: 2 aprovados automaticamente e 5 aguardando uma pessoa, incluindo a tentativa de injeção de prompt. O pipeline de IA (n8n, gateway de LLM e Codex CLI) roda no ambiente local descrito abaixo, então na demo as decisões são salvas, mas o write-back no Shopify fica desativado. Os dados da demo são resetados de tempos em tempos.
+A conta demo é revisora nas três marcas. A demo online roda o painel na Vercel e no Supabase (Londres) com pedidos que a IA revisou de verdade: 2 aprovados automaticamente e 5 aguardando uma pessoa, incluindo a tentativa de injeção de prompt. Os dados da demo são resetados de tempos em tempos.
+
+A terceira marca, **Order Ops Demo Store**, é uma [loja de desenvolvimento real do Shopify](#loja-de-desenvolvimento-real-do-shopify): os pedidos chegam pelo webhook `orders/create` de verdade, e a decisão tomada na demo grava tags e nota no pedido pela Admin API. O pipeline de IA (n8n, gateway de LLM e Codex CLI) roda na máquina do autor, atrás de um túnel, então o ciclo com a loja real funciona enquanto ela está ligada; fora disso, a decisão é salva e o painel avisa que o Shopify não foi atualizado.
 
 | Fila de revisão | Correção sugerida pela IA |
 |---|---|
@@ -49,7 +51,7 @@ flowchart TB
     subgraph N8N["n8n (Docker)"]
         direction LR
         WF1["Revisar pedido<br/>webhook + varredura a cada 5 min"]
-        WF2["Aplicar decisão<br/>tags + nota"]
+        WF2["Aplicar decisão<br/>token + tags + nota"]
         WF3["Tratar erros"]
     end
 
@@ -65,7 +67,7 @@ flowchart TB
     STORE -- "1 orders/create, assinado com HMAC" --> EF
     EF -- "2 verifica, deduplica, checa, persiste" --> DB
     EF -- "3 notifica" --> WF1
-    WF1 -- "4 claim + grava resultados" --> DB
+    WF1 -- "4 claim, grava resultados e falhas da IA" --> DB
     WF1 -- "5 pedido de revisão" --> GW
     GW --> CODEX
     GW -.-> CLAUDE
@@ -73,9 +75,10 @@ flowchart TB
     OPS --> UI
     UI -- "6b lê + decide, JWT do usuário" --> DB
     UI -- "7 decisão tomada" --> WF2
-    WF2 -- "8 tags + nota" --> STORE
-    WF1 -. "falhas" .-> WF3
-    WF2 -. "falhas" .-> WF3
+    WF2 -- "8 lê o pedido, registra o sync" --> DB
+    WF2 -- "9 token de acesso, depois tags + nota" --> STORE
+    WF1 -. "execução quebrou" .-> WF3
+    WF2 -. "execução quebrou" .-> WF3
     WF3 -- "workflow_errors" --> DB
 ```
 
@@ -95,9 +98,9 @@ Os dois workflows são gerados a partir do código (`npm run workflows`) e impor
 
 ![Workflow n8n "Revisar pedido": webhook e agendamento de 5 minutos levando a claim, revisão pelo LLM, roteamento, gravação, write-back no Shopify e registro de falhas](docs/screenshots/n8n-review-order.png)
 
-**Aplicar decisão no Shopify:** busca o pedido decidido, monta as tags e a nota (incluindo o texto corrigido pelo revisor, se houver) e chama a Admin API do Shopify em modo live, ou uma simulação em desenvolvimento. Nos dois casos, registra o resultado.
+**Aplicar decisão no Shopify:** busca o pedido decidido e monta as tags e a nota (incluindo o texto corrigido pelo revisor, se houver). Em modo live, pede um token de acesso de curta duração (client credentials) e chama a Admin API do Shopify; em desenvolvimento, chama uma simulação. Nos dois casos, registra o resultado.
 
-![Workflow n8n "Aplicar decisão no Shopify": webhook, busca do pedido, montagem de tags e nota, chamada live ou simulada ao Shopify, registro do sync](docs/screenshots/n8n-apply-decision.png)
+![Workflow n8n "Aplicar decisão no Shopify": webhook, busca do pedido, montagem de tags e nota, ramo live (token de acesso, depois tags e nota) ou simulado, registro do sync](docs/screenshots/n8n-apply-decision.png)
 
 Um terceiro workflow, **Tratar erros**, é configurado como workflow de erro dos dois e grava cada falha em `workflow_errors`.
 
@@ -117,13 +120,14 @@ sequenceDiagram
 
     S->>EF: POST orders/create (HMAC)
     EF->>EF: verifica HMAC, ignora se o webhook id já foi visto
+    Note over EF: loja desconhecida ou nenhum item personalizado: 200, nada a revisar
     EF->>DB: upsert do pedido + itens com verificações determinísticas
+    EF-)N: notify(order_id), em segundo plano
     EF-->>S: 200 accepted
-    EF-)N: notify(order_id)
 
     N->>DB: claim_orders_for_review(order_id)
     Note over N,DB: FOR UPDATE SKIP LOCKED, status de pending para reviewing
-    DB-->>N: pedido, itens, verificações, regras do produto
+    DB-->>N: pedido, itens, verificações, charset, limiar da marca
 
     loop cada item personalizado
         N->>GW: pedido de revisão (prompt vN + schema JSON)
@@ -134,9 +138,13 @@ sequenceDiagram
     end
 
     N->>DB: save_review_results (uma transação)
+    opt IA indisponível para algum item
+        N->>DB: workflow_errors
+    end
 
     alt verificações ok, veredito ok, confiança no limiar da marca ou acima
         N->>N: webhook apply-decision
+        N->>S: token de acesso (client credentials)
         N->>S: tagsAdd personalisation-ok + nota
         N->>DB: shopify_sync_log
     else algo sinalizado, incerto ou com falha
@@ -147,9 +155,11 @@ sequenceDiagram
         UI->>DB: decide_review (papel e regras do produto conferidos de novo)
         DB-->>UI: pedido aprovado ou retido
         UI->>N: webhook apply-decision
-        N->>S: tags + nota com o texto final
+        Note over UI,N: n8n fora do ar: a decisão continua salva e o painel avisa que o Shopify não foi atualizado
+        N->>S: token de acesso, depois tags + nota com o texto final
         N->>DB: shopify_sync_log
     end
+    Note over S,N: modo live só para SHOPIFY_STORE_DOMAIN, as outras marcas usam simulação
 
     opt n8n fora do ar quando o webhook chegou
         N->>DB: varredura a cada 5 min pega pedidos pendentes há mais de 2 min ou presos em revisão há mais de 10 min
@@ -197,21 +207,78 @@ Detalhes em [docs/EVALS.md](docs/EVALS.md) (em inglês).
 - **Idempotência** pelo webhook id. Reentregas voltam como `duplicate`, e os upserts nunca reiniciam o status de um pedido.
 - **Persistir primeiro, notificar depois.** A varredura a cada 5 minutos recupera pedidos se o n8n estava fora e retoma execuções que morreram no meio da revisão.
 - **Retentativas** (3, com espera crescente) no LLM e na gravação no banco. Depois disso o item vai com segurança para uma pessoa, e o erro é gravado em `workflow_errors` por um workflow de erros dedicado.
-- **Segredos** só no `.env`, nas credenciais do n8n e nos secrets das Edge Functions. Os webhooks do n8n e o gateway de LLM exigem segredo compartilhado, comparado em tempo constante.
+- **Segredos** só no `.env`, nas credenciais do n8n, nos secrets das Edge Functions e nas variáveis sensíveis da Vercel. Os webhooks do n8n e o gateway de LLM exigem segredo compartilhado, comparado em tempo constante.
+- **Acesso ao Shopify** por um token de 24 h do client credentials grant, pedido a cada write-back e nunca guardado. O app declara como dados protegidos só os dados do pedido e o nome do cliente.
+- **Túnel** (demo online): uma traffic policy do ngrok só deixa passar `POST` nos dois webhooks do n8n; o editor e a API do n8n respondem 404.
 - **RLS em todas as tabelas.** As funções do workflow só podem ser executadas pela `service_role`. A `decide_review` confere de novo o papel do revisor, recusa aprovar texto que viola as regras do produto e recusa edições acima do limite de caracteres.
 
 ## Stack
 
-**Linguagem:** TypeScript de ponta a ponta, em modo estrito (`noUncheckedIndexedAccess`, `erasableSyntaxOnly`). O Node 24 executa direto, removendo os tipos, sem etapa de build. Os Code nodes do n8n recebem a mesma lógica, com os tipos removidos na geração.
-**Dados e backend:** Supabase (Postgres, Row Level Security, Auth, Edge Functions em Deno)
-**Orquestração:** n8n 2.x (Docker), workflows gerados a partir do código
-**IA:** Codex CLI (`gpt-5.6-luna`) ou Messages API do Claude, atrás de um gateway tipado (Node + TypeScript)
-**Frontend:** Next.js 16 (App Router, Server Actions, `proxy.ts`), React 19, Tailwind CSS 4
-**Testes:** `tsc` estrito + `deno check`, Deno test, test runner do Node, testes de integração de RLS contra o Supabase local, conjunto de avaliação do LLM, Playwright para as capturas de tela
+**Linguagem:** TypeScript de ponta a ponta, em modo estrito (`noUncheckedIndexedAccess`, `erasableSyntaxOnly`). O Node 24 executa os arquivos direto, por type stripping, sem etapa de build. Os Code nodes do n8n recebem a mesma lógica, com os tipos removidos na geração.
+
+As versões são as usadas para construir e validar o projeto (setembro de 2026).
+
+### Runtimes e infraestrutura
+
+| Tecnologia | Versão | Papel |
+|---|---|---|
+| [Node.js](https://nodejs.org) | 24.21 (mínimo 22.18) | Scripts, gateway de LLM, testes; executa `.ts` direto |
+| [TypeScript](https://www.typescriptlang.org) | 7.0 (raiz), 5.9 (painel) | Tipagem estrita em todo o código, só sintaxe apagável |
+| [Deno](https://deno.com) | 2.9 | Runtime da Edge Function, `deno check` e `deno test` |
+| [Docker](https://www.docker.com) + Compose | 29.6 + Compose 5.3 | Supabase local e n8n |
+| CLI do [Supabase](https://supabase.com) | 2.118 | Stack local, migrations, deploy de funções, secrets |
+| [PostgreSQL](https://www.postgresql.org) | 17.6 (Supabase) | Dados, Row Level Security, funções do workflow |
+| [n8n](https://n8n.io) | 2.40.7 (imagem Docker fixada) | Orquestração; workflows gerados por código |
+| Agente do [ngrok](https://ngrok.com) | 3.37 | Túnel com domínio fixo que expõe só os webhooks do n8n |
+| [Vercel](https://vercel.com) | região `lhr1` | Hospedagem do painel, ao lado do Supabase em Londres |
+
+### IA
+
+| Tecnologia | Versão | Papel |
+|---|---|---|
+| [Codex CLI](https://github.com/openai/codex) | 0.155 | Provedor padrão, headless, com login da conta ChatGPT |
+| Modelos via Codex | `gpt-5.6-luna` (principal), `gpt-5.6-terra` (reserva) | Revisão da personalização com schema JSON estrito |
+| [SDK TypeScript da Anthropic](https://github.com/anthropics/anthropic-sdk-typescript) | 0.128 | Provedor alternativo (`LLM_PROVEDOR=anthropic`) |
+| Modelo via Anthropic | `claude-opus-5` | Mesmo prompt e schema do caminho Codex |
+
+### Shopify
+
+| Tecnologia | Versão | Papel |
+|---|---|---|
+| Admin GraphQL API | `2026-07` | `orderCreate`, `tagsAdd`, `orderUpdate`, assinaturas de webhook |
+| Webhooks | `orders/create`, API `2026-07` | Entrada de pedidos, assinados com HMAC-SHA256 |
+| App do Dev Dashboard | client credentials grant | Token de acesso de 24 h, sem OAuth interativo |
+
+### Painel
+
+| Tecnologia | Versão | Papel |
+|---|---|---|
+| [Next.js](https://nextjs.org) | 16.3 | App Router, Server Actions, `proxy.ts` |
+| [React](https://react.dev) | 19.2 | Interface |
+| [Tailwind CSS](https://tailwindcss.com) | 4.3 | Estilos, temas claro e escuro |
+| [supabase-js](https://github.com/supabase/supabase-js) + [@supabase/ssr](https://github.com/supabase/ssr) | 2.117 + 0.12 | Auth e consultas sob RLS (só a chave publicável) |
+| [ESLint](https://eslint.org) | 9.39 | Lint (`eslint-config-next`) |
+
+### Qualidade
+
+| Tecnologia | Versão | Papel |
+|---|---|---|
+| Test runner do Node | embutido no Node 24 | Testes unitários (`lib/`) e de integração do RLS |
+| Deno test | embutido no Deno 2.9 | Verificações determinísticas e HMAC |
+| Conjunto de avaliação do LLM | 24 casos rotulados | Portão do prompt: não pode regredir (veja [EVALS](docs/EVALS.md)) |
+| [Playwright](https://playwright.dev) | 1.63 | Capturas de tela do README |
+
+### Contas e serviços
+
+- **Shopify:** organização de parceiro com uma loja de desenvolvimento e um app no Dev Dashboard (gratuito).
+- **Supabase:** um projeto para a demo online (o plano gratuito basta); a stack local não exige conta.
+- **Vercel:** hospedagem do painel (plano Hobby).
+- **ngrok:** conta gratuita; o domínio dev estático mantém a URL do túnel fixa.
+- **LLM:** uma conta ChatGPT logada no Codex CLI ou uma chave da API da Anthropic com crédito.
 
 ## Rodando localmente
 
-Pré-requisitos: Docker, Node 22+, Deno e o [Codex CLI](https://github.com/openai/codex) com login feito uma vez (`codex`).
+Pré-requisitos: Docker, Node 22.18+ (24 recomendado), Deno 2 e o [Codex CLI](https://github.com/openai/codex) com login feito uma vez (`codex`). O ambiente com a loja real também precisa do [agente do ngrok](https://ngrok.com/download).
 
 ```bash
 npm install && npm install --prefix web
@@ -235,8 +302,39 @@ Usuários de demonstração: `ops@demo.test` (admin nas duas marcas), `reviewer@
 | `npm run eval` | Avaliação do prompt (uma chamada real ao LLM por caso) |
 | `npm run workflows` | Regenera `n8n/workflows/` a partir de `lib/` e `prompts/` |
 | `npm run simular -- <fixture> [--novo-id] [--duplicar] [--hmac-invalido]` | Simulador de webhooks assinados |
+| `npm run shopify -- verificar \| webhook <url> \| webhooks \| pedido <fixture\|all>` | Loja de desenvolvimento real: confere o acesso, registra `orders/create`, cria pedidos de teste |
+| `npm run n8n:alvo -- <local\|nuvem>` | Aponta o n8n para o Supabase local ou para o projeto da demo online |
+| `npm run tunel` | Expõe só os dois webhooks do n8n pelo ngrok (domínio fixo) |
 
 Para usar o Claude em vez do Codex, defina `LLM_PROVEDOR=anthropic` e `ANTHROPIC_API_KEY` no `.env` e reinicie o gateway.
+
+## Loja de desenvolvimento real do Shopify
+
+Além do simulador de webhooks assinados, o pipeline roda contra uma loja de desenvolvimento real (`order-ops-copilot-demo.myshopify.com`) e um app criado no Dev Dashboard do Shopify. Online, as peças ficam assim:
+
+```mermaid
+flowchart LR
+    SHOP["Shopify<br/>loja de desenvolvimento"] -->|orders/create| EF["Edge Function<br/>Supabase, Londres"]
+    EF --> DB[("Postgres<br/>Supabase, Londres")]
+    UI["Painel<br/>Vercel lhr1"] --> DB
+    EF -->|review-order| T{{"ngrok<br/>domínio fixo"}}
+    UI -->|apply-decision| T
+    subgraph HOST["Máquina do autor"]
+        N8N["n8n"] --> GW["Gateway de LLM"] --> CODEX["Codex CLI"]
+    end
+    T --> N8N
+    N8N --> DB
+    N8N -->|tags + nota| SHOP
+```
+
+
+1. **Token de acesso:** o app e a loja são da mesma organização, então o token sai do *client credentials grant* (client ID + secret, sem OAuth interativo). Ele vale 24 h, por isso nada de longa duração fica guardado: o workflow de write-back pede um token novo a cada execução.
+2. **Webhook:** `npm run shopify -- webhook <url>` assina `orders/create` na Edge Function do projeto online. O Shopify assina com o client secret do app, o único valor de que a função precisa.
+3. **Dados protegidos de clientes:** o app declara só o mínimo (dados do pedido e o nome do cliente, do qual o revisor vê o primeiro nome). E-mail, telefone e endereço não são pedidos, então nem chegam ao sistema.
+4. **Pedidos de teste:** `npm run shopify -- pedido <fixture|all>` cria pedidos de teste reais a partir das mesmas fixtures do simulador, com a personalização em line item properties.
+5. **Ciclo completo:** `npm run n8n:alvo -- nuvem` aponta o n8n local para o projeto online, e `npm run tunel` expõe só `POST /webhook/review-order` e `POST /webhook/apply-decision` (uma traffic policy do ngrok responde 404 para o editor e a API do n8n; os webhooks continuam exigindo o segredo compartilhado). `SHOPIFY_MODE=live` vale só para `SHOPIFY_STORE_DOMAIN`; as marcas fictícias seguem em modo simulado.
+
+Validado de ponta a ponta: o pedido #1001 ("Happy Anniversery") foi criado na loja, revisado pela IA (`fix`, 0,99, "Anniversary"), aprovado no painel online e recebeu no Shopify as tags `personalisation-ok` e `human-reviewed`, além da nota.
 
 ## Estrutura do projeto
 
@@ -245,13 +343,13 @@ docs/                 TDD, histórico de avaliação, capturas de tela
 supabase/
   migrations/         schema, RLS, funções do workflow e de decisão
   functions/          shopify-webhook + verificações e HMAC compartilhados (Deno)
-lib/                  requisição de revisão, roteamento, provedor de LLM (fonte única para o n8n e o eval)
+lib/                  requisição de revisão, roteamento, provedor de LLM, cliente da Admin API do Shopify (fonte única para o n8n e o eval)
 services/             gateway de LLM
 prompts/              prompts versionados + schema de saída
-n8n/                  docker-compose + workflows gerados
+n8n/                  docker-compose (n8n fixado), workflows gerados, política de tráfego do túnel
 evals/                casos rotulados
 fixtures/shopify/     payloads realistas de orders/create
-scripts/              setup, gerador de workflows, simulador, eval, seeds, capturas
+scripts/              setup, gerador de workflows, simulador, loja real (shopify), alvo do n8n, túnel, eval, seeds, capturas
 tests/                testes de integração de RLS
 web/                  painel Next.js
 ```
@@ -260,10 +358,10 @@ web/                  painel Next.js
 
 ## Limitações conhecidas e próximos passos
 
-- **Loja de desenvolvimento real do Shopify:** hoje o write-back roda em modo simulado (`SHOPIFY_MODE=mock`). O caminho real (Admin GraphQL `tagsAdd` + `orderUpdate`) está implementado, mas ainda não foi exercitado contra uma loja.
+- **Reenvio do write-back:** uma decisão tomada com o pipeline fora do ar fica salva, mas a atualização no Shopify ainda não é reenviada automaticamente. Uma varredura de pedidos decididos sem sync bem-sucedido fecharia essa lacuna.
 - **Ordem dos campos:** a personalização é gravada como objeto `jsonb`, e o Postgres reordena as chaves. Ela deveria virar uma lista ordenada de `{name, value}`, formato que o resto do pipeline já usa.
 - **Limites por produto** vêm de uma tabela estática por SKU (`product_rules`). Uma versão futura deve lê-los dos metafields do Shopify.
-- **Pipeline completo online:** o painel e o banco já estão no ar (veja a [Demo online](#demo-online)). Colocar o pipeline de IA online também exige o n8n e o gateway de LLM num host pequeno sempre ligado, com um provedor hospedado no lugar do login pessoal do Codex.
+- **Pipeline completo online:** o painel, o banco e o endpoint de webhooks já estão no ar, e o pipeline de IA os atende a partir da máquina do autor por um túnel (veja [Loja de desenvolvimento real do Shopify](#loja-de-desenvolvimento-real-do-shopify)). Deixá-lo sempre ligado exige o n8n e o gateway de LLM num host pequeno, com um provedor hospedado no lugar do login pessoal do Codex.
 - **Métricas:** p95 do tempo até a revisão e taxa de aprovação automática por marca, a partir dos dados já gravados.
 
 ## Autor

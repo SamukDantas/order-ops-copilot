@@ -3,6 +3,7 @@ node_modules/
 .env.local
 supabase/functions/.env
 n8n/.credentials/
+n8n/.env.alvo
 evals/results/
 .next/
 .vercel/

@@ -81,8 +81,6 @@ const credentials = [
     } }) } },
   { id: "ooCredWebhook001", name: "n8n webhook secret", type: "httpHeaderAuth",
     data: { name: "x-webhook-secret", value: env.N8N_WEBHOOK_SECRET } },
-  { id: "ooCredShopify001", name: "Shopify Admin API", type: "httpHeaderAuth",
-    data: { name: "X-Shopify-Access-Token", value: env.SHOPIFY_ADMIN_TOKEN ?? "" } },
 ];
 writeFileSync(join(credsDir, "credentials.json"), JSON.stringify(credentials, null, 2));
 

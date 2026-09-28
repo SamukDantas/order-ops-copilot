@@ -12,7 +12,9 @@ A multi-brand D2C retailer sells made-to-order personalised products (engraving,
 
 **https://order-ops-copilot.vercel.app** · login `demo@order-ops-copilot.dev` · password `!UserTest30`
 
-The demo account is a reviewer on both brands. The online demo runs the dashboard on Vercel and Supabase (London) with orders that the AI really reviewed: 2 auto-approved and 5 waiting for a person, including the prompt-injection attempt. The AI pipeline (n8n, the LLM gateway and the Codex CLI) runs in the local setup below, so in the demo your decisions are saved but the Shopify write-back is disabled. Demo data is reset from time to time.
+The demo account is a reviewer on all three brands. The online demo runs the dashboard on Vercel and Supabase (London) with orders that the AI really reviewed: 2 auto-approved and 5 waiting for a person, including the prompt-injection attempt. Demo data is reset from time to time.
+
+The third brand, **Order Ops Demo Store**, is a real [Shopify development store](#real-shopify-development-store): its orders arrive through the actual `orders/create` webhook, and a decision taken in the demo writes tags and a note back to the order through the Admin API. The AI pipeline (n8n, the LLM gateway and the Codex CLI) runs on the author's machine behind a tunnel, so the real-store round trip works while it is online; otherwise decisions are saved and the dashboard says Shopify was not updated.
 
 | Review queue | Correction suggested by the AI |
 |---|---|
@@ -47,7 +49,7 @@ flowchart TB
     subgraph N8N["n8n (Docker)"]
         direction LR
         WF1["Review order<br/>webhook + 5-min sweep"]
-        WF2["Apply decision<br/>tags + note"]
+        WF2["Apply decision<br/>token + tags + note"]
         WF3["Error handler"]
     end
 
@@ -63,7 +65,7 @@ flowchart TB
     STORE -- "1 orders/create, HMAC signed" --> EF
     EF -- "2 verify, dedupe, checks, persist" --> DB
     EF -- "3 notify" --> WF1
-    WF1 -- "4 claim + save results" --> DB
+    WF1 -- "4 claim, save results, log AI failures" --> DB
     WF1 -- "5 review request" --> GW
     GW --> CODEX
     GW -.-> CLAUDE
@@ -71,9 +73,10 @@ flowchart TB
     OPS --> UI
     UI -- "6b read + decide, user JWT" --> DB
     UI -- "7 decision taken" --> WF2
-    WF2 -- "8 tags + note" --> STORE
-    WF1 -. "failures" .-> WF3
-    WF2 -. "failures" .-> WF3
+    WF2 -- "8 read order, log sync" --> DB
+    WF2 -- "9 access token, then tags + note" --> STORE
+    WF1 -. "crash" .-> WF3
+    WF2 -. "crash" .-> WF3
     WF3 -- "workflow_errors" --> DB
 ```
 
@@ -93,9 +96,9 @@ Both workflows are generated from code (`npm run workflows`) and imported by CLI
 
 ![n8n workflow "Revisar pedido": webhook and 5-minute schedule into claim, LLM review, routing, save, Shopify write-back and failure logging](docs/screenshots/n8n-review-order.png)
 
-**Apply decision:** fetches the decided order, builds tags and a note (including any text a reviewer corrected), then calls the Shopify Admin API in live mode or a mock in development, and logs the result either way.
+**Apply decision:** fetches the decided order, builds tags and a note (including any text a reviewer corrected), then, in live mode, requests a short-lived access token (client credentials) and calls the Shopify Admin API; in development it calls a mock. It logs the result either way.
 
-![n8n workflow "Aplicar decisão no Shopify": webhook, fetch order, build tags and note, live or mock Shopify call, log the sync](docs/screenshots/n8n-apply-decision.png)
+![n8n workflow "Aplicar decisão no Shopify": webhook, fetch order, build tags and note, live branch (access token, then tags and note) or mock, log the sync](docs/screenshots/n8n-apply-decision.png)
 
 A third workflow, **error handler**, is wired as the error workflow for both and writes every failure to `workflow_errors`.
 
@@ -115,13 +118,14 @@ sequenceDiagram
 
     S->>EF: POST orders/create (HMAC)
     EF->>EF: verify HMAC, skip if webhook id already seen
+    Note over EF: unknown shop or no personalised items: 200, nothing to review
     EF->>DB: upsert order + items with deterministic checks
+    EF-)N: notify(order_id), in the background
     EF-->>S: 200 accepted
-    EF-)N: notify(order_id)
 
     N->>DB: claim_orders_for_review(order_id)
     Note over N,DB: FOR UPDATE SKIP LOCKED, status pending to reviewing
-    DB-->>N: order, items, checks, product rules
+    DB-->>N: order, items, checks, charset, brand threshold
 
     loop each personalised item
         N->>GW: review request (prompt vN + JSON schema)
@@ -132,9 +136,13 @@ sequenceDiagram
     end
 
     N->>DB: save_review_results (one transaction)
+    opt AI unavailable for an item
+        N->>DB: workflow_errors
+    end
 
     alt checks passed, verdict ok, confidence at or above brand threshold
         N->>N: apply-decision webhook
+        N->>S: access token (client credentials)
         N->>S: tagsAdd personalisation-ok + note
         N->>DB: shopify_sync_log
     else anything flagged, uncertain or failed
@@ -145,9 +153,11 @@ sequenceDiagram
         UI->>DB: decide_review (role and product rules re-checked)
         DB-->>UI: order approved or on hold
         UI->>N: apply-decision webhook
-        N->>S: tags + note with the final text
+        Note over UI,N: n8n unreachable: the decision stays saved and the dashboard says Shopify was not updated
+        N->>S: access token, then tags + note with the final text
         N->>DB: shopify_sync_log
     end
+    Note over S,N: live mode only for SHOPIFY_STORE_DOMAIN, other brands use a mock
 
     opt n8n unreachable when the webhook arrived
         N->>DB: 5-minute sweep claims orders pending over 2 min or stuck reviewing over 10 min
@@ -195,21 +205,78 @@ Details in [docs/EVALS.md](docs/EVALS.md).
 - **Idempotency** by webhook id. Redeliveries return `duplicate`, and upserts never reset an order's status.
 - **Persist first, notify second.** The 5-minute sweep recovers orders if n8n was down, and reclaims runs that died mid-review.
 - **Retries** (3, with backoff) on the LLM and on the database write. After that the item fails safe to a human, and the error is written to `workflow_errors` by a dedicated n8n error workflow.
-- **Secrets** live only in `.env`, n8n credentials and Edge Function secrets. n8n webhooks and the LLM gateway require shared secrets, compared in constant time.
+- **Secrets** live only in `.env`, n8n credentials, Edge Function secrets and Vercel's sensitive variables. n8n webhooks and the LLM gateway require shared secrets, compared in constant time.
+- **Shopify access** uses a 24 h token from the client credentials grant, requested on every write-back and never stored. The app declares only order data and the customer's name as protected customer data.
+- **Tunnel** (online demo): an ngrok traffic policy lets only `POST` to the two n8n webhooks through; the n8n editor and API return 404.
 - **RLS on every table.** Workflow functions are executable by `service_role` only. `decide_review` re-checks the reviewer role, refuses to approve text that breaks product rules, and refuses edits over the character limit.
 
 ## Tech stack
 
 **Language:** TypeScript end to end, in strict mode (`noUncheckedIndexedAccess`, `erasableSyntaxOnly`). Node 24 runs it natively through type stripping, with no build step. The n8n Code nodes get the same logic with its types removed at generation time.
-**Data and backend:** Supabase (Postgres, Row Level Security, Auth, Edge Functions on Deno)
-**Orchestration:** n8n 2.x (Docker), workflows generated from code
-**AI:** Codex CLI (`gpt-5.6-luna`) or Claude Messages API, behind a small typed gateway (Node + TypeScript)
-**Frontend:** Next.js 16 (App Router, Server Actions, `proxy.ts`), React 19, Tailwind CSS 4
-**Testing:** `tsc` strict + `deno check`, Deno test, Node test runner, RLS integration tests against local Supabase, LLM evaluation set, Playwright for screenshots
+
+Versions are the ones this project was built and verified with (September 2026).
+
+### Runtimes and infrastructure
+
+| Technology | Version | Role |
+|---|---|---|
+| [Node.js](https://nodejs.org) | 24.21 (minimum 22.18) | Scripts, LLM gateway, tests; runs `.ts` directly |
+| [TypeScript](https://www.typescriptlang.org) | 7.0 (root), 5.9 (dashboard) | Strict typing everywhere, type-only syntax |
+| [Deno](https://deno.com) | 2.9 | Edge Function runtime, `deno check` and `deno test` |
+| [Docker](https://www.docker.com) + Compose | 29.6 + Compose 5.3 | Local Supabase stack and n8n |
+| [Supabase](https://supabase.com) CLI | 2.118 | Local stack, migrations, function deploy, secrets |
+| [PostgreSQL](https://www.postgresql.org) | 17.6 (Supabase) | Data, Row Level Security, workflow functions |
+| [n8n](https://n8n.io) | 2.40.7 (pinned Docker image) | Orchestration; workflows generated from code |
+| [ngrok](https://ngrok.com) agent | 3.37 | Fixed-domain tunnel exposing only the n8n webhooks |
+| [Vercel](https://vercel.com) | region `lhr1` | Dashboard hosting, next to Supabase in London |
+
+### AI
+
+| Technology | Version | Role |
+|---|---|---|
+| [Codex CLI](https://github.com/openai/codex) | 0.155 | Default provider, headless, with a ChatGPT account login |
+| Models via Codex | `gpt-5.6-luna` (main), `gpt-5.6-terra` (fallback) | Personalisation review with a strict JSON schema |
+| [Anthropic TypeScript SDK](https://github.com/anthropics/anthropic-sdk-typescript) | 0.128 | Alternative provider (`LLM_PROVEDOR=anthropic`) |
+| Model via Anthropic | `claude-opus-5` | Same prompt and schema as the Codex path |
+
+### Shopify
+
+| Technology | Version | Role |
+|---|---|---|
+| Admin GraphQL API | `2026-07` | `orderCreate`, `tagsAdd`, `orderUpdate`, webhook subscriptions |
+| Webhooks | `orders/create`, API `2026-07` | Order intake, signed with HMAC-SHA256 |
+| Dev Dashboard app | client credentials grant | 24 h access token, no interactive OAuth |
+
+### Dashboard
+
+| Technology | Version | Role |
+|---|---|---|
+| [Next.js](https://nextjs.org) | 16.3 | App Router, Server Actions, `proxy.ts` |
+| [React](https://react.dev) | 19.2 | UI |
+| [Tailwind CSS](https://tailwindcss.com) | 4.3 | Styling, light and dark themes |
+| [supabase-js](https://github.com/supabase/supabase-js) + [@supabase/ssr](https://github.com/supabase/ssr) | 2.117 + 0.12 | Auth and queries under RLS (publishable key only) |
+| [ESLint](https://eslint.org) | 9.39 | Linting (`eslint-config-next`) |
+
+### Quality
+
+| Technology | Version | Role |
+|---|---|---|
+| Node test runner | built into Node 24 | Unit tests (`lib/`) and RLS integration tests |
+| Deno test | built into Deno 2.9 | Deterministic checks and HMAC |
+| LLM evaluation set | 24 labelled cases | Prompt gate: no regression allowed (see [EVALS](docs/EVALS.md)) |
+| [Playwright](https://playwright.dev) | 1.63 | README screenshots |
+
+### Accounts and services
+
+- **Shopify:** a Partner organization with a development store and an app in the Dev Dashboard (free).
+- **Supabase:** one project for the online demo (free tier is enough); the local stack needs no account.
+- **Vercel:** hosting for the dashboard (Hobby plan).
+- **ngrok:** free account; its static dev domain keeps the tunnel URL fixed.
+- **LLM:** a ChatGPT account logged in to the Codex CLI, or an Anthropic API key with credit.
 
 ## Running locally
 
-Prerequisites: Docker, Node 22+, Deno, and the [Codex CLI](https://github.com/openai/codex) logged in once (`codex`).
+Prerequisites: Docker, Node 22.18+ (24 recommended), Deno 2, and the [Codex CLI](https://github.com/openai/codex) logged in once (`codex`). The real-store setup also needs the [ngrok agent](https://ngrok.com/download).
 
 ```bash
 npm install && npm install --prefix web
@@ -233,8 +300,39 @@ Demo users: `ops@demo.test` (admin, both brands), `reviewer@demo.test` (reviewer
 | `npm run eval` | Prompt evaluation (one real LLM call per case) |
 | `npm run workflows` | Regenerate `n8n/workflows/` from `lib/` and `prompts/` |
 | `npm run simular -- <fixture> [--novo-id] [--duplicar] [--hmac-invalido]` | Signed webhook simulator |
+| `npm run shopify -- verificar \| webhook <url> \| webhooks \| pedido <fixture\|all>` | Real development store: check access, register `orders/create`, create test orders |
+| `npm run n8n:alvo -- <local\|nuvem>` | Point n8n at the local Supabase or at the online demo project |
+| `npm run tunel` | Expose only the two n8n webhooks through ngrok (fixed domain) |
 
 To use Claude instead of Codex, set `LLM_PROVEDOR=anthropic` and `ANTHROPIC_API_KEY` in `.env` and restart the gateway.
+
+## Real Shopify development store
+
+Besides the signed-webhook simulator, the pipeline runs against a real development store (`order-ops-copilot-demo.myshopify.com`) and an app created in the Shopify Dev Dashboard. Online, the pieces are split like this:
+
+```mermaid
+flowchart LR
+    SHOP["Shopify<br/>development store"] -->|orders/create| EF["Edge Function<br/>Supabase, London"]
+    EF --> DB[("Postgres<br/>Supabase, London")]
+    UI["Dashboard<br/>Vercel lhr1"] --> DB
+    EF -->|review-order| T{{"ngrok<br/>fixed domain"}}
+    UI -->|apply-decision| T
+    subgraph HOST["Author's machine"]
+        N8N["n8n"] --> GW["LLM gateway"] --> CODEX["Codex CLI"]
+    end
+    T --> N8N
+    N8N --> DB
+    N8N -->|tags + note| SHOP
+```
+
+
+1. **Access token:** the app and the store belong to the same organization, so the token comes from the *client credentials grant* (client ID + secret, no interactive OAuth). It lasts 24 h, so nothing long-lived is stored: the write-back workflow asks for a fresh token each time.
+2. **Webhook:** `npm run shopify -- webhook <url>` subscribes `orders/create` to the Edge Function in the online project. Shopify signs it with the app's client secret, which is the only value the function needs.
+3. **Protected customer data:** the app declares only the minimum (order data plus the customer's name, of which the reviewer sees the first name). Email, phone and address are not requested, so they never reach the system.
+4. **Test orders:** `npm run shopify -- pedido <fixture|all>` creates real test orders from the same fixtures the simulator uses, with the personalisation in line item properties.
+5. **Round trip:** `npm run n8n:alvo -- nuvem` points the local n8n at the online project, and `npm run tunel` exposes only `POST /webhook/review-order` and `POST /webhook/apply-decision` (an ngrok traffic policy returns 404 for the n8n editor and API; the webhooks still require their shared secret). `SHOPIFY_MODE=live` applies only to `SHOPIFY_STORE_DOMAIN`; the fictional brands stay in mock mode.
+
+Verified end to end: order #1001 ("Happy Anniversery") was created in the store, reviewed by the AI (`fix`, 0.99, "Anniversary"), approved in the online dashboard, and received the `personalisation-ok` and `human-reviewed` tags plus a note in Shopify.
 
 ## Project structure
 
@@ -243,13 +341,13 @@ docs/                 TDD, evaluation log, screenshots
 supabase/
   migrations/         schema, RLS, workflow and decision functions
   functions/          shopify-webhook + shared checks and HMAC (Deno)
-lib/                  review request, routing logic, LLM provider (single source for n8n and evals)
+lib/                  review request, routing logic, LLM provider, Shopify Admin client (single source for n8n and evals)
 services/             LLM gateway
 prompts/              versioned prompts + output schema
-n8n/                  docker-compose + generated workflows
+n8n/                  docker-compose (pinned n8n), generated workflows, tunnel traffic policy
 evals/                labelled cases
 fixtures/shopify/     realistic orders/create payloads
-scripts/              setup, workflow generator, simulator, eval, seeds, screenshots
+scripts/              setup, workflow generator, simulator, real store (shopify), n8n target, tunnel, eval, seeds, screenshots
 tests/                RLS integration tests
 web/                  Next.js dashboard
 ```
@@ -258,10 +356,10 @@ web/                  Next.js dashboard
 
 ## Known limitations and next steps
 
-- **Real Shopify development store:** write-back runs in mock mode today (`SHOPIFY_MODE=mock`), and the live path (Admin GraphQL `tagsAdd` + `orderUpdate`) is wired but not yet exercised against a store.
+- **Write-back retry:** a decision taken while the pipeline is offline is saved, but its Shopify update is not retried automatically yet. A sweep for decided orders without a successful sync would close that gap.
 - **Field order:** personalisation is stored as a `jsonb` object, and Postgres normalises key order. It should become an ordered list of `{name, value}`, which the rest of the pipeline already uses.
 - **Product limits** come from a static SKU table (`product_rules`). A later version should read them from Shopify metafields.
-- **Full pipeline online:** the dashboard and database are live (see [Live demo](#live-demo)). Running the AI pipeline online as well needs n8n and the LLM gateway on a small always-on host, plus a hosted provider instead of a personal Codex login.
+- **Full pipeline online:** the dashboard, database and webhook endpoint are live, and the AI pipeline serves them from the author's machine through a tunnel (see [Real Shopify development store](#real-shopify-development-store)). Running it always-on needs n8n and the LLM gateway on a small host, plus a hosted provider instead of a personal Codex login.
 - **Metrics:** p95 time-to-review and auto-approval rate per brand, from the data already stored.
 
 ## Author

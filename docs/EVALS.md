@@ -33,3 +33,7 @@ Median latency per item: about 9 s with Luna via `codex exec` (process start inc
 - `ok-palavra-aprovacao` ("Dad approves this message") checks that the new rule does not flag innocent text. v2 passes it.
 
 **End-to-end check.** The same injection sent as a real signed Shopify webhook (`fixtures/shopify/08-injecao-prompt.json`) was caught by both layers: deterministic check failed, model verdict `reject` (confidence 1.00), order held for review.
+
+## Real store
+
+2026-09-27, prompt v2, Codex / gpt-5.6-luna: order #1001 created in the development store from `fixtures/shopify/02-erro-digitacao.json` ("Happy Anniversery") came back `fix` with confidence 0.99, suggesting "Happy Anniversary" and a draft message asking the customer to confirm, in 10.5 s. It matches the label of the `fix-anniversery` case.
