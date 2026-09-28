@@ -143,7 +143,7 @@ erDiagram
       uuid id PK
       uuid order_id FK
       text sku
-      jsonb personalisation
+      jsonb personalisation "[{name, value}] in store order"
       jsonb checks "deterministic, at ingestion"
     }
     reviews {
@@ -238,8 +238,8 @@ The Edge Function and n8n use the `service_role` key server-side. The browser ne
 - Per-product character limits: a static SKU map (`product_rules`) for v1. Reading them from product metafields is the v2 path.
 - Auto-approval thresholds differ per brand (`brands.auto_approve_min_confidence`), with 0.7 as a floor.
 - LLM provider: Codex CLI by default, Claude Messages API as a drop-in alternative behind the same gateway.
+- Personalisation is stored as an ordered list of `{name, value}` in the order of the Shopify line item properties (a `jsonb` object would reorder the keys, and on an engraving the line order matters). A check constraint keeps it a list.
 
 **Open**
 
 - Where to host n8n and the gateway for an always-on pipeline, and which hosted model provider replaces the personal Codex login there.
-- Store personalisation as an ordered list of `{name, value}` instead of a `jsonb` object, so the field order the customer saw is kept.

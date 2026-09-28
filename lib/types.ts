@@ -20,7 +20,8 @@ export type ReviewRoute = "auto_approved" | "needs_review";
 export interface ReviewItemInput {
   title: string;
   charset: Charset | string | null;
-  personalisation: Record<string, string>;
+  /** Lista na ordem do cliente; um objeto (formato anterior) é aceito e convertido. */
+  personalisation: Field[] | Record<string, string>;
   checks: ChecksResult | Record<string, unknown>;
   order_date: string;
 }

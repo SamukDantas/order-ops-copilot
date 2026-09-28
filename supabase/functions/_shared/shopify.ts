@@ -1,5 +1,7 @@
 // Tipos mínimos do payload orders/create do Shopify e extração da personalização.
 
+import type { PersonalisationField } from "./checks.ts";
+
 export interface ShopifyLineItem {
   id: number;
   sku: string | null;
@@ -18,15 +20,15 @@ export interface ShopifyOrder {
 }
 
 /**
- * Retorna só as propriedades visíveis ao cliente. No Shopify, propriedades
- * cujo nome começa com "_" são internas (apps, tracking) e não fazem parte
- * da personalização.
+ * Retorna só as propriedades visíveis ao cliente, na ordem em que vieram do
+ * Shopify (a ordem do formulário da loja). Propriedades cujo nome começa com
+ * "_" são internas (apps, tracking) e não fazem parte da personalização.
  */
-export function extractPersonalisation(item: ShopifyLineItem): Record<string, string> {
-  const out: Record<string, string> = {};
+export function extractPersonalisation(item: ShopifyLineItem): PersonalisationField[] {
+  const out: PersonalisationField[] = [];
   for (const p of item.properties ?? []) {
     if (!p?.name || p.name.startsWith("_")) continue;
-    out[p.name] = String(p.value ?? "");
+    out.push({ name: p.name, value: String(p.value ?? "") });
   }
   return out;
 }

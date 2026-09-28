@@ -8,7 +8,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildReviewRequest, PROMPT_VERSION } from "../lib/review-request.ts";
+import { buildReviewRequest, PROMPT_VERSION, toFields } from "../lib/review-request.ts";
 import { completar, provedor, codexModelo } from "../lib/llm-provider.ts";
 import { parseReviewResponse, routeItem } from "../lib/review-logic.ts";
 import { checkPersonalisation, type Charset } from "../supabase/functions/_shared/checks.ts";
@@ -49,8 +49,9 @@ if (onlyIdx > -1) {
 const ORDER_DATE = "2026-09-26";
 
 async function runCase(c: EvalCase): Promise<CaseResult> {
-  const checks = checkPersonalisation(c.personalisation, { max_chars: c.max_chars, charset: c.charset });
-  const body = buildReviewRequest({ title: c.title, charset: c.charset, personalisation: c.personalisation, checks, order_date: ORDER_DATE });
+  const campos = toFields(c.personalisation);
+  const checks = checkPersonalisation(campos, { max_chars: c.max_chars, charset: c.charset });
+  const body = buildReviewRequest({ title: c.title, charset: c.charset, personalisation: campos, checks, order_date: ORDER_DATE });
   const t0 = Date.now();
   let resp: LlmResponse;
   try {

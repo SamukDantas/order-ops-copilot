@@ -62,7 +62,7 @@ Deno.serve(async (req) => {
 
   const personalised = order.line_items
     .map((li) => ({ li, fields: extractPersonalisation(li) }))
-    .filter((x) => Object.keys(x.fields).length > 0);
+    .filter((x) => x.fields.length > 0);
 
   if (personalised.length === 0) {
     await recordEvent(webhookId, topic, shopDomain);

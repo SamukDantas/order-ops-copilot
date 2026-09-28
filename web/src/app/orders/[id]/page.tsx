@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { Header, StatusBadge, VerdictBadge } from "../../components";
 import { decide } from "./actions";
-import { latestReview, type Field, type OrderItem, type OrderStatus } from "@/lib/types";
+import { latestReview, personalisationFields, type Field, type OrderItem, type OrderStatus } from "@/lib/types";
 
 export default async function OrderPage(props: PageProps<"/orders/[id]">) {
   const { id } = await props.params;
@@ -72,7 +72,7 @@ export default async function OrderPage(props: PageProps<"/orders/[id]">) {
 function ItemCard({ item, orderId, canDecide }: { item: OrderItem; orderId: string; canDecide: boolean }) {
   const review = latestReview(item);
   const decision = review?.review_decisions?.sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
-  const original: Field[] = Object.entries(item.personalisation).map(([name, value]) => ({ name, value }));
+  const original: Field[] = personalisationFields(item.personalisation);
   const suggestion = review?.suggested_text ?? null;
   const prefill = suggestion ?? original;
 

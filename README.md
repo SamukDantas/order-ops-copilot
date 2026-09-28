@@ -361,7 +361,6 @@ web/                  Next.js dashboard
 
 ## Known limitations and next steps
 
-- **Field order:** personalisation is stored as a `jsonb` object, and Postgres normalises key order. It should become an ordered list of `{name, value}`, which the rest of the pipeline already uses.
 - **Product limits** come from a static SKU table (`product_rules`). A later version should read them from Shopify metafields.
 - **Full pipeline online:** the dashboard, database and webhook endpoint are live, and the AI pipeline serves them from the author's machine through a tunnel (see [Real Shopify development store](#real-shopify-development-store)). Running it always-on needs n8n and the LLM gateway on a small host, plus a hosted provider instead of a personal Codex login.
 - **Metrics history:** the Metrics page computes the current window on request. Trends over time (daily snapshots) and alerting when a brand misses a target are the next step.
