@@ -10,6 +10,7 @@ import { stripTypeScriptTypes } from "node:module";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SYSTEM_PROMPT, OUTPUT_SCHEMA, MODEL, PROMPT_VERSION, buildReviewRequest, toFields } from "../lib/review-request.ts";
+import { PRODUCT_RULES_QUERY, rulesFromProducts } from "../lib/shopify-rules.ts";
 
 // ─── Formato dos workflows do n8n (o subconjunto que geramos) ─────────
 type Position = [number, number];
@@ -61,7 +62,7 @@ const outDir = join(root, "n8n", "workflows");
 mkdirSync(outDir, { recursive: true });
 
 // ─── IDs estáveis (reimportar atualiza em vez de duplicar) ───────────
-const WF = { revisar: "ooRevisarPedido1", aplicar: "ooAplicarDecisa1", erros: "ooTratarErros001" };
+const WF = { revisar: "ooRevisarPedido1", aplicar: "ooAplicarDecisa1", erros: "ooTratarErros001", regras: "ooSincRegras0001" };
 const CRED = {
   llm: { id: "ooCredLlmGateway", name: "LLM gateway secret" },
   supabase: { id: "ooCredSupabase01", name: "Supabase service role" },
@@ -419,10 +420,78 @@ const errosNodes = [
 ];
 const erros = workflow(WF.erros, "Tratar erros", errosNodes, connect([["Falha em workflow", "Registrar erro"]]), { errorWorkflow: null });
 
+// ═══ 4. Sincronizar regras do Shopify ═════════════════════════════════
+// Lê os metafields order_ops.max_chars / order_ops.charset dos produtos da loja
+// (SHOPIFY_STORE_DOMAIN) e aplica em product_rules. A Edge Function só lê o
+// Postgres: a ingestão não depende da Admin API.
+const rulesFromProductsSrc = paraJs(rulesFromProducts.toString());
+const regrasNodes = [
+  {
+    id: "a-cada-hora-regras", name: "A cada hora", type: "n8n-nodes-base.scheduleTrigger", typeVersion: 1.2,
+    position: pos(0, 1),
+    parameters: { rule: { interval: [{ field: "hours", hoursInterval: 1 }] } },
+  },
+  webhook("Webhook: sincronizar regras", pos(0), "sync-rules", "5b1f2a4e-8c1d-4e0b-9a51-3f7a2d6c1e04"),
+  code("Loja", pos(1), `const loja = String($env.SHOPIFY_STORE_DOMAIN ?? "").trim().toLowerCase();
+// Sem loja configurada (desenvolvimento só com o simulador), não há o que sincronizar
+return loja ? [{ json: { shop_domain: loja } }] : [];`),
+  {
+    id: slug("Shopify: token (regras)"), name: "Shopify: token (regras)", type: "n8n-nodes-base.httpRequest", typeVersion: 4.2,
+    position: pos(2),
+    parameters: {
+      method: "POST",
+      url: "=https://{{ $json.shop_domain }}/admin/oauth/access_token",
+      sendBody: true,
+      contentType: "form-urlencoded",
+      bodyParameters: { parameters: [
+        { name: "grant_type", value: "client_credentials" },
+        { name: "client_id", value: "={{ $env.SHOPIFY_CLIENT_ID }}" },
+        { name: "client_secret", value: "={{ $env.SHOPIFY_CLIENT_SECRET }}" },
+      ] },
+      options: {},
+    },
+    retryOnFail: true, maxTries: 3, waitBetweenTries: 3000,
+  },
+  httpJson("Shopify: produtos e metafields", pos(3), {
+    url: `=https://{{ $("Loja").item.json.shop_domain }}/admin/api/2026-07/graphql.json`,
+    headers: [{ name: "X-Shopify-Access-Token", value: "={{ $json.access_token }}" }],
+    body: `={{ JSON.stringify({ query: ${JSON.stringify(PRODUCT_RULES_QUERY)} }) }}`,
+    extra: { retryOnFail: true, maxTries: 3, waitBetweenTries: 3000 },
+  }),
+  code("Mapear regras", pos(4), `${rulesFromProductsSrc}
+if (Array.isArray($json.errors) && $json.errors.length) {
+  throw new Error("Admin API: " + $json.errors.map((e) => e.message).join("; "));
+}
+const { rules, problems } = rulesFromProducts($json.data);
+return { json: { shop_domain: $("Loja").item.json.shop_domain, rules, problems } };`, "runOnceForEachItem"),
+  httpJson("Aplicar regras", pos(5), {
+    url: `${SUPA}/rest/v1/rpc/sync_product_rules`,
+    body: "={{ JSON.stringify({ p_shop_domain: $json.shop_domain, p_rules: $json.rules }) }}",
+    auth: supabaseAuth, creds: supabaseCreds,
+  }),
+  ifNode("Houve regra inválida?", pos(6), `={{ $("Mapear regras").item.json.problems.length > 0 }}`, "true"),
+  httpJson("Registrar regras inválidas", pos(7), {
+    url: `${SUPA}/rest/v1/workflow_errors`,
+    body: `={{ JSON.stringify($("Mapear regras").item.json.problems.map((m) => ({ workflow: "Sincronizar regras do Shopify", node: "Mapear regras", message: m }))) }}`,
+    auth: supabaseAuth, creds: supabaseCreds,
+  }),
+];
+const regras = workflow(WF.regras, "Sincronizar regras do Shopify", regrasNodes, connect([
+  ["A cada hora", "Loja"],
+  ["Webhook: sincronizar regras", "Loja"],
+  ["Loja", "Shopify: token (regras)"],
+  ["Shopify: token (regras)", "Shopify: produtos e metafields"],
+  ["Shopify: produtos e metafields", "Mapear regras"],
+  ["Mapear regras", "Aplicar regras"],
+  ["Aplicar regras", "Houve regra inválida?"],
+  ["Houve regra inválida?", "Registrar regras inválidas", 0],
+]));
+
 const saidas: [arquivo: string, wf: Workflow][] = [
   ["01-revisar-pedido.json", revisar],
   ["02-aplicar-decisao.json", aplicar],
   ["03-tratar-erros.json", erros],
+  ["04-sincronizar-regras.json", regras],
 ];
 for (const [file, wf] of saidas) {
   writeFileSync(join(outDir, file), JSON.stringify(wf, null, 2) + "\n");

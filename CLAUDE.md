@@ -35,6 +35,7 @@ npm run simular -- all   # envia todos os webhooks de exemplo
 npm run gateway          # sobe o gateway de LLM (obrigatório para o n8n revisar)
 npm run test:integration # RLS contra o Supabase local
 npm run shopify -- verificar        # loja de desenvolvimento real (token por client credentials)
+npm run shopify -- catalogo         # produtos + metafields order_ops.* (regras sincronizadas pelo workflow 04)
 npm run n8n:alvo -- <local|nuvem>   # Supabase que o n8n usa
 npm run tunel            # expõe só os webhooks do n8n (ngrok, domínio fixo)
 ```

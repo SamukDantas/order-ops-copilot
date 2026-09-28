@@ -1,0 +1,335 @@
+{
+  "id": "ooSincRegras0001",
+  "name": "Sincronizar regras do Shopify",
+  "active": false,
+  "nodes": [
+    {
+      "id": "a-cada-hora-regras",
+      "name": "A cada hora",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        500
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "webhook-sincronizar-regras",
+      "name": "Webhook: sincronizar regras",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "5b1f2a4e-8c1d-4e0b-9a51-3f7a2d6c1e04",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "sync-rules",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ooCredWebhook001",
+          "name": "n8n webhook secret"
+        }
+      }
+    },
+    {
+      "id": "loja",
+      "name": "Loja",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const loja = String($env.SHOPIFY_STORE_DOMAIN ?? \"\").trim().toLowerCase();\n// Sem loja configurada (desenvolvimento só com o simulador), não há o que sincronizar\nreturn loja ? [{ json: { shop_domain: loja } }] : [];"
+      }
+    },
+    {
+      "id": "shopify-token-regras",
+      "name": "Shopify: token (regras)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        520,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://{{ $json.shop_domain }}/admin/oauth/access_token",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "grant_type",
+              "value": "client_credentials"
+            },
+            {
+              "name": "client_id",
+              "value": "={{ $env.SHOPIFY_CLIENT_ID }}"
+            },
+            {
+              "name": "client_secret",
+              "value": "={{ $env.SHOPIFY_CLIENT_SECRET }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "shopify-produtos-e-metafields",
+      "name": "Shopify: produtos e metafields",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        780,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://{{ $(\"Loja\").item.json.shop_domain }}/admin/api/2026-07/graphql.json",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Shopify-Access-Token",
+              "value": "={{ $json.access_token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ query: \"{\\n  products(first: 100) {\\n    nodes {\\n      title\\n      maxChars: metafield(namespace: \\\"order_ops\\\", key: \\\"max_chars\\\") { value }\\n      charset: metafield(namespace: \\\"order_ops\\\", key: \\\"charset\\\") { value }\\n      variants(first: 50) {\\n        nodes {\\n          sku\\n          maxChars: metafield(namespace: \\\"order_ops\\\", key: \\\"max_chars\\\") { value }\\n          charset: metafield(namespace: \\\"order_ops\\\", key: \\\"charset\\\") { value }\\n        }\\n      }\\n    }\\n  }\\n}\" }) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "mapear-regras",
+      "name": "Mapear regras",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function rulesFromProducts(data) {\n  const obj = (x) => (typeof x === \"object\" && x !== null ? (x) : {});\n  const lista = (x) => (Array.isArray(obj(x).nodes) ? (obj(x).nodes) : []);\n  const valor = (x) => {\n    const v = obj(x).value;\n    return typeof v === \"string\" && v.trim() !== \"\" ? v.trim() : null;\n  };\n  const CHARSETS = [\"engraving\", \"print\", \"embroidery\"];\n\n  const rules = [];\n  const problems = [];\n  const vistos = new Set ();\n\n  for (const produto of lista(obj(data).products)) {\n    const p = obj(produto);\n    const titulo = typeof p.title === \"string\" ? p.title : \"(sem título)\";\n    for (const variante of lista(p.variants)) {\n      const v = obj(variante);\n      const sku = typeof v.sku === \"string\" ? v.sku.trim() : \"\";\n      const maxBruto = valor(v.maxChars) ?? valor(p.maxChars);\n      const charset = valor(v.charset) ?? valor(p.charset);\n      if (maxBruto === null && charset === null) continue; // produto sem personalização\n\n      if (!sku) { problems.push(`${titulo}: variante com regra, mas sem SKU`); continue; }\n      const maxChars = Number(maxBruto);\n      if (maxBruto === null || !Number.isInteger(maxChars) || maxChars <= 0) {\n        problems.push(`${sku}: max_chars ausente ou inválido (${maxBruto ?? \"vazio\"})`); continue;\n      }\n      if (charset === null || !CHARSETS.includes(charset)) {\n        problems.push(`${sku}: charset ausente ou inválido (${charset ?? \"vazio\"})`); continue;\n      }\n      if (vistos.has(sku)) { problems.push(`${sku}: SKU repetido; vale a primeira regra`); continue; }\n      vistos.add(sku);\n      rules.push({ sku, max_chars: maxChars, charset: charset });\n    }\n  }\n  return { rules, problems };\n}\nif (Array.isArray($json.errors) && $json.errors.length) {\n  throw new Error(\"Admin API: \" + $json.errors.map((e) => e.message).join(\"; \"));\n}\nconst { rules, problems } = rulesFromProducts($json.data);\nreturn { json: { shop_domain: $(\"Loja\").item.json.shop_domain, rules, problems } };"
+      }
+    },
+    {
+      "id": "aplicar-regras",
+      "name": "Aplicar regras",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1300,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/rpc/sync_product_rules",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendHeaders": false,
+        "headerParameters": {
+          "parameters": []
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_shop_domain: $json.shop_domain, p_rules: $json.rules }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "ooCredSupabase01",
+          "name": "Supabase service role"
+        }
+      }
+    },
+    {
+      "id": "houve-regra-invalida",
+      "name": "Houve regra inválida?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "houve-regra-invalida-c",
+              "leftValue": "={{ $(\"Mapear regras\").item.json.problems.length > 0 }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "registrar-regras-invalidas",
+      "name": "Registrar regras inválidas",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1820,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/workflow_errors",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendHeaders": false,
+        "headerParameters": {
+          "parameters": []
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($(\"Mapear regras\").item.json.problems.map((m) => ({ workflow: \"Sincronizar regras do Shopify\", node: \"Mapear regras\", message: m }))) }}",
+        "options": {}
+      },
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "ooCredSupabase01",
+          "name": "Supabase service role"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "A cada hora": {
+      "main": [
+        [
+          {
+            "node": "Loja",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: sincronizar regras": {
+      "main": [
+        [
+          {
+            "node": "Loja",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loja": {
+      "main": [
+        [
+          {
+            "node": "Shopify: token (regras)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shopify: token (regras)": {
+      "main": [
+        [
+          {
+            "node": "Shopify: produtos e metafields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shopify: produtos e metafields": {
+      "main": [
+        [
+          {
+            "node": "Mapear regras",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mapear regras": {
+      "main": [
+        [
+          {
+            "node": "Aplicar regras",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aplicar regras": {
+      "main": [
+        [
+          {
+            "node": "Houve regra inválida?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Houve regra inválida?": {
+      "main": [
+        [
+          {
+            "node": "Registrar regras inválidas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "ooTratarErros001"
+  },
+  "pinData": {},
+  "tags": []
+}

@@ -5,7 +5,7 @@
 import { execSync } from "node:child_process";
 
 const C = "order-ops-n8n";
-const WORKFLOWS = ["ooTratarErros001", "ooAplicarDecisa1", "ooRevisarPedido1"];
+const WORKFLOWS = ["ooTratarErros001", "ooAplicarDecisa1", "ooRevisarPedido1", "ooSincRegras0001"];
 
 const run = (cmd: string, { tolerate = false } = {}): boolean => {
   try {
