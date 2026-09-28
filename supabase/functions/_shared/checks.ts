@@ -4,6 +4,12 @@
 
 export type Charset = "engraving" | "print" | "embroidery";
 
+/** Um campo de personalização, na ordem em que o cliente o preencheu. */
+export interface PersonalisationField {
+  name: string;
+  value: string;
+}
+
 export interface ProductRule {
   max_chars: number;
   charset: Charset;
@@ -58,10 +64,10 @@ const ALLOWED: Record<Charset, RegExp> = {
 };
 
 export function checkPersonalisation(
-  fields: Record<string, string>,
+  fields: readonly PersonalisationField[],
   rule: ProductRule | null,
 ): ChecksResult {
-  const results: FieldCheck[] = Object.entries(fields).map(([name, raw]) => {
+  const results: FieldCheck[] = fields.map(({ name, value: raw }) => {
     const value = raw ?? "";
     const chars = Array.from(value); // conta code points, não unidades UTF-16
     const violations: Violation[] = [];

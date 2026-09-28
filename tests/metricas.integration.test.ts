@@ -61,7 +61,7 @@ async function pedido(n: number, status: string, atrasoS: number, verdict: strin
     brand_id: MARCA, shopify_order_id: 970000 + n, order_number: `#M${n}`, raw: {}, status, created_at: iso(recebido),
   }) })).json()) as { id: string }[];
   const [i] = (await (await admin("order_items", { method: "POST", body: JSON.stringify({
-    order_id: o!.id, shopify_line_item_id: 980000 + n, title: "Teste", personalisation: { Linha: "x" },
+    order_id: o!.id, shopify_line_item_id: 980000 + n, title: "Teste", personalisation: [{ name: "Linha", value: "x" }],
   }) })).json()) as { id: string }[];
   const revisadoEm = recebido - atrasoS * 1000;
   const [r] = (await (await admin("reviews", { method: "POST", body: JSON.stringify({

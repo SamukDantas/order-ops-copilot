@@ -31,7 +31,8 @@ export interface OrderItem {
   title: string;
   sku: string | null;
   quantity: number;
-  personalisation: Record<string, string>;
+  /** Lista na ordem do cliente (objeto só em linhas anteriores à migration 20260928000002). */
+  personalisation: unknown;
   checks: { passed: boolean; fields: FieldCheck[] };
   reviews: Review[];
 }
@@ -55,4 +56,23 @@ export const VERDICT_LABEL: Record<Verdict, string> = {
 
 export function latestReview(item: OrderItem): Review | undefined {
   return [...(item.reviews ?? [])].sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+}
+
+/**
+ * Personalização como lista `{name, value}` na ordem do cliente. O mesmo
+ * normalizador de lib/review-request.ts (toFields): aceita o objeto do formato
+ * anterior e descarta entradas malformadas.
+ */
+export function personalisationFields(x: unknown): Field[] {
+  if (Array.isArray(x)) {
+    return x.flatMap((f: unknown) => {
+      if (typeof f !== "object" || f === null) return [];
+      const { name, value } = f as Record<string, unknown>;
+      return typeof name === "string" ? [{ name, value: typeof value === "string" ? value : String(value ?? "") }] : [];
+    });
+  }
+  if (typeof x === "object" && x !== null) {
+    return Object.entries(x as Record<string, unknown>).map(([name, value]) => ({ name, value: String(value ?? "") }));
+  }
+  return [];
 }

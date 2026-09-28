@@ -9,7 +9,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SYSTEM_PROMPT, OUTPUT_SCHEMA, MODEL, PROMPT_VERSION, buildReviewRequest } from "../lib/review-request.ts";
+import { SYSTEM_PROMPT, OUTPUT_SCHEMA, MODEL, PROMPT_VERSION, buildReviewRequest, toFields } from "../lib/review-request.ts";
 
 // ─── Formato dos workflows do n8n (o subconjunto que geramos) ─────────
 type Position = [number, number];
@@ -77,6 +77,7 @@ const buildRequestSrc = paraJs(`const SYSTEM_PROMPT = ${JSON.stringify(SYSTEM_PR
 const OUTPUT_SCHEMA = ${JSON.stringify(OUTPUT_SCHEMA)};
 const MODEL = ${JSON.stringify(MODEL)};
 const PROMPT_VERSION = ${JSON.stringify(PROMPT_VERSION)};
+${toFields.toString()}
 ${buildReviewRequest.toString()}`);
 
 // ─── Helpers de nós ──────────────────────────────────────────────────

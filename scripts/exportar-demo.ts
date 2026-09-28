@@ -27,7 +27,7 @@ interface ReviewRow {
 }
 interface ItemRow {
   id: string; shopify_line_item_id: number; sku: string | null; title: string; quantity: number;
-  personalisation: Record<string, string>; checks: { passed?: boolean }; reviews: ReviewRow[];
+  personalisation: Field[]; checks: { passed?: boolean }; reviews: ReviewRow[];
 }
 interface OrderRow {
   id: string; brand_id: string; shopify_order_id: number; order_number: string; customer_first_name: string | null;

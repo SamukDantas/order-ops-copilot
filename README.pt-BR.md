@@ -363,7 +363,6 @@ web/                  painel Next.js
 
 ## Limitações conhecidas e próximos passos
 
-- **Ordem dos campos:** a personalização é gravada como objeto `jsonb`, e o Postgres reordena as chaves. Ela deveria virar uma lista ordenada de `{name, value}`, formato que o resto do pipeline já usa.
 - **Limites por produto** vêm de uma tabela estática por SKU (`product_rules`). Uma versão futura deve lê-los dos metafields do Shopify.
 - **Pipeline completo online:** o painel, o banco e o endpoint de webhooks já estão no ar, e o pipeline de IA os atende a partir da máquina do autor por um túnel (veja [Loja de desenvolvimento real do Shopify](#loja-de-desenvolvimento-real-do-shopify)). Deixá-lo sempre ligado exige o n8n e o gateway de LLM num host pequeno, com um provedor hospedado no lugar do login pessoal do Codex.
 - **Histórico de métricas:** a página calcula a janela atual a cada acesso. Tendência ao longo do tempo (fotos diárias) e alertas quando uma marca sai da meta são o próximo passo.
