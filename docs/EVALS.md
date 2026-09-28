@@ -37,3 +37,7 @@ Median latency per item: about 9 s with Luna via `codex exec` (process start inc
 ## Real store
 
 2026-09-27, prompt v2, Codex / gpt-5.6-luna: order #1001 created in the development store from `fixtures/shopify/02-erro-digitacao.json` ("Happy Anniversery") came back `fix` with confidence 0.99, suggesting "Happy Anniversary" and a draft message asking the customer to confirm, in 10.5 s. It matches the label of the `fix-anniversery` case.
+
+Order #1002, from `fixtures/shopify/04-data-futura.json` ("Est. 2031"), came back `reject` with confidence 0.98 ("the intended year cannot be safely inferred"), in 13.5 s. The `fix-data-futura` case labels it `fix`, so this run would count as an exact-accuracy miss. Both verdicts send the item to a person, so routing and the safety metric are unaffected. Open question for the next eval run: whether `reject` should also be an accepted label for a future date with no obvious correction.
+
+Order #1003, from `fixtures/shopify/01-limpo.json` ("Olivia & Tom", 12 characters), was a check of the rules synced from Shopify metafields rather than of the prompt: with the keyring limit lowered to 10 in the store, the deterministic check failed with `over_limit` and the order went to a person. The model agreed (`fix`, 0.84, suggesting "Olivia/Tom"), in 14.5 s.

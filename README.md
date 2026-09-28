@@ -12,7 +12,7 @@ A multi-brand D2C retailer sells made-to-order personalised products (engraving,
 
 **https://order-ops-copilot.vercel.app** · login `demo@order-ops-copilot.dev` · password `!UserTest30`
 
-The demo account is a reviewer on all three brands. The online demo runs the dashboard on Vercel and Supabase (London) with orders that the AI really reviewed: 2 auto-approved and 5 waiting for a person, including the prompt-injection attempt. Demo data is reset from time to time.
+The demo account is a reviewer on all three brands. The online demo runs the dashboard on Vercel and Supabase (London) with orders that the AI really reviewed: on the two fictional brands, 2 auto-approved and 5 waiting for a person, including the prompt-injection attempt. Demo data is reset from time to time.
 
 The third brand, **Order Ops Demo Store**, is a real [Shopify development store](#real-shopify-development-store): its orders arrive through the actual `orders/create` webhook, and a decision taken in the demo writes tags and a note back to the order through the Admin API. The AI pipeline (n8n, the LLM gateway and the Codex CLI) runs on the author's machine behind a tunnel, so the real-store round trip works while it is online; otherwise decisions are saved and reach Shopify automatically once it is back online.
 
@@ -27,7 +27,7 @@ The third brand, **Order Ops Demo Store**, is a real [Shopify development store]
 ## Highlights
 
 - **About 10 s per item from webhook to decision:** Shopify `orders/create` → Supabase Edge Function (HMAC-verified, idempotent) → n8n workflow → LLM → Postgres → dashboard.
-- **Hard rules in code, judgement in the model.** Character limits, supported character sets, emoji and prompt-injection patterns are deterministic checks the model cannot override. The model handles typos, impossible dates, profanity, trademarks and tone.
+- **Hard rules in code, judgement in the model.** Character limits, supported character sets, emoji and prompt-injection patterns are deterministic checks the model cannot override. On the real store, each product's limit and technique come from Shopify metafields the merchant edits in the admin. The model handles typos, impossible dates, profanity, trademarks and tone.
 - **Fail-safe by construction.** Any AI failure (refusal, timeout, invalid JSON, low confidence) routes the item to a person with the verdict `unavailable`. Nothing is auto-approved on uncertainty.
 - **Evaluated, versioned prompts.** 24 labelled cases, and a prompt ships only if flag recall stays at 100% and unsafe auto-approvals stay at 0. The evaluation caught a real prompt-injection hole in v1, fixed in v2 (see the [evaluation log](docs/EVALS.md)).
 - **Row Level Security across brands.** Reviewers see and act only on their brands. Decisions go through a `SECURITY DEFINER` function that re-checks role and product rules server-side. Covered by integration tests that sign in as real users.
@@ -87,7 +87,7 @@ flowchart TB
 | Component | Responsibility | Why it lives there |
 |---|---|---|
 | **Edge Function** | Verify HMAC over the raw body, deduplicate by `X-Shopify-Webhook-Id`, run deterministic checks, persist | Shopify needs a response within 5 s and retries on failure. Persisting first means no order is lost if n8n or the LLM is down. |
-| **n8n** | Orchestration: claim, LLM call, retries, routing, write-back, error handling | Operations can see every run, retry it and change branching without a deploy. |
+| **n8n** | Orchestration: claim, LLM call, retries, routing, write-back, rules sync, error handling | Operations can see every run, retry it and change branching without a deploy. |
 | **LLM gateway** | One stable contract in front of any provider | n8n runs in a container, while the Codex CLI and its login live on the host. Switching provider is an environment variable, not a workflow change. |
 | **Postgres + RLS** | Source of truth and access control | One policy layer protects the dashboard, the API and anything built later. Atomic functions make each workflow step all-or-nothing. |
 | **Dashboard** | Human-in-the-loop review | Holds only the publishable key and acts with the signed-in user's JWT. It never sees `service_role`. |
@@ -122,10 +122,15 @@ sequenceDiagram
     participant UI as Dashboard
     actor R as Reviewer
 
+    opt every hour, independent of orders (real store)
+        N->>S: access token, then products with order_ops.* metafields
+        N->>DB: sync_product_rules (one transaction)
+    end
+
     S->>EF: POST orders/create (HMAC)
     EF->>EF: verify HMAC, skip if webhook id already seen
     Note over EF: unknown shop or no personalised items: 200, nothing to review
-    EF->>DB: upsert order + items with deterministic checks
+    EF->>DB: read product_rules by SKU, upsert order + items with deterministic checks
     EF-)N: notify(order_id), in the background
     EF-->>S: 200 accepted
 
@@ -253,9 +258,9 @@ Versions are the ones this project was built and verified with (September 2026).
 
 | Technology | Version | Role |
 |---|---|---|
-| Admin GraphQL API | `2026-07` | `orderCreate`, `tagsAdd`, `orderUpdate`, webhook subscriptions |
+| Admin GraphQL API | `2026-07` | `orderCreate`, `tagsAdd`, `orderUpdate`, webhook subscriptions; reading products and metafields, `productSet` and `metafieldDefinitionCreate` (catalogue) |
 | Webhooks | `orders/create`, API `2026-07` | Order intake, signed with HMAC-SHA256 |
-| Dev Dashboard app | client credentials grant | 24 h access token, no interactive OAuth |
+| Dev Dashboard app | client credentials grant | 24 h access token, no interactive OAuth. Scopes: `read_orders`, `write_orders`, `read_products` and `write_products` (the last one only for `catalogo`) |
 
 ### Dashboard
 
@@ -332,7 +337,7 @@ flowchart LR
     end
     T --> N8N
     N8N --> DB
-    N8N -->|tags + note| SHOP
+    N8N -->|tags + note, reads metafields| SHOP
 ```
 
 
@@ -352,14 +357,14 @@ docs/                 TDD, evaluation log, screenshots
 supabase/
   migrations/         schema, RLS, workflow and decision functions
   functions/          shopify-webhook + shared checks and HMAC (Deno)
-lib/                  review request, routing logic, LLM provider, Shopify Admin client (single source for n8n and evals)
+lib/                  review request, routing logic, LLM provider, Shopify Admin client and metafield rules (single source for n8n and evals)
 services/             LLM gateway
 prompts/              versioned prompts + output schema
 n8n/                  docker-compose (pinned n8n), generated workflows, tunnel traffic policy
 evals/                labelled cases
 fixtures/shopify/     realistic orders/create payloads
 scripts/              setup, workflow generator, simulator, real store (shopify), n8n target, tunnel, eval, seeds, screenshots
-tests/                RLS integration tests
+tests/                integration tests (RLS, decisions, rules sync)
 web/                  Next.js dashboard
 ```
 

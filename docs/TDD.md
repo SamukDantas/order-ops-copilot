@@ -65,8 +65,11 @@ flowchart LR
     UI -->|decision| N8N_A
     N8N_A -->|read order, sync log| DB
     N8N_A -->|token + tag + note| SHOP
+    SYNC[n8n: sync-rules<br/>hourly or on demand] -->|product metafields| SHOP
+    SYNC -->|sync_product_rules| DB
     N8N_R -. crash .-> ERR[n8n: error handler]
     N8N_A -. crash .-> ERR
+    SYNC -. crash .-> ERR
     ERR -->|workflow_errors| DB
 ```
 
@@ -75,7 +78,7 @@ flowchart LR
 | Component | Responsibility | Reason |
 |---|---|---|
 | **Edge Function** | Receive the webhook, verify the HMAC, deduplicate, persist | Shopify requires a 200 response within 5 s and retries on failure. Persisting first means nothing is lost even if n8n or the LLM is down. |
-| **n8n** | Orchestration: AI call, branching, retries, write-back to Shopify | The business team can see the flow, retry runs and change branching without a deploy. |
+| **n8n** | Orchestration: AI call, branching, retries, write-back to Shopify, product rules sync | The business team can see the flow, retry runs and change branching without a deploy. |
 | **Postgres + RLS** | Source of truth and access control | One policy layer protects the dashboard, the API and any future tool. |
 | **Next.js dashboard** | Human-in-the-loop review | Holds no privileged keys: it acts with the signed-in user's JWT, so RLS applies. |
 
@@ -178,6 +181,8 @@ erDiagram
 
 Additional tables: `webhook_events` (idempotency via `X-Shopify-Webhook-Id`) and `workflow_errors` (failures captured by the n8n error workflow).
 
+The `error` order status is accepted by the schema but not produced today: an AI failure routes the order to `needs_review` (see §6), so it always reaches a person.
+
 `product_rules` has two sources. `manual` rows are written by hand (the fictional brands in the seed). `shopify` rows come from the store: the n8n workflow "Sincronizar regras do Shopify" reads the `order_ops.max_chars` and `order_ops.charset` metafields (product, overridden by variant) every hour and calls `sync_product_rules` (`service_role` only), which in one transaction upserts them by SKU, replacing a manual rule for the same SKU, and removes `shopify` rows that left the store. Invalid metafields are skipped and logged to `workflow_errors`; an invalid rule in the payload aborts the whole sync, so the table is never half-updated. The Edge Function reads only `product_rules`, so ingestion does not depend on the Admin API.
 
 ### Row Level Security
@@ -213,12 +218,13 @@ The Edge Function and n8n use the `service_role` key server-side. The browser ne
 | LLM error or timeout (provider or gateway) | n8n retries 3 times with backoff; then the item is stored with verdict `unavailable`, the order goes to `needs_review` and a `workflow_errors` row is written |
 | Invalid model output | Treated as low confidence, routed to `needs_review` |
 | Shopify write-back fails | Retried 3 times (token request and GraphQL call); the result is logged in `shopify_sync_log` and failures in `workflow_errors` |
+| Rules sync fails (Shopify unreachable, invalid metafield) | The last synced rules stay in `product_rules`, so ingestion keeps checking limits. Token and GraphQL calls retry 3 times; an invalid metafield is skipped and logged to `workflow_errors`; `sync_product_rules` is all-or-nothing, so the table is never half-updated |
 | Pipeline offline when a decision is taken, or the write-back failed | The decision is saved. A 5-minute sweep in `apply-decision` calls `orders_pending_sync` (decided orders with no successful sync since the decision, older than 2 min) and applies them again. Shopify failures are logged with `ok = false` (only the error message, never the request) and the sweep gives up after 5 of them |
 
 ## 8. Security
 
 - Shopify HMAC verified with a constant-time comparison over the raw body.
-- **Shopify access:** the app and the development store belong to the same organization, so the Admin API token comes from the client credentials grant. It lasts 24 h and is requested on every write-back instead of being stored. Only `SHOPIFY_STORE_DOMAIN` runs in live mode; other brands stay in mock.
+- **Shopify access:** the app and the development store belong to the same organization, so the Admin API token comes from the client credentials grant. It lasts 24 h and is requested on every write-back instead of being stored. Only `SHOPIFY_STORE_DOMAIN` runs in live mode; other brands stay in mock. Scopes: `read_orders`, `write_orders`, `read_products` and `write_products`; the last one is used only by `npm run shopify -- catalogo` to create the demo products and metafield definitions, and the pipeline itself only reads products.
 - **Protected customer data:** the app declares only order data and the customer's name. Email, phone and address are not requested.
 - Secrets (Shopify client secret, LLM gateway, `service_role`) live only in Edge Function secrets, n8n credentials, the host `.env` and Vercel's sensitive environment variables. The gateway requires a shared secret and compares it in constant time.
 - The n8n webhooks require a shared secret header. When exposed through the tunnel, an ngrok traffic policy lets only `POST` to the two webhooks through; the n8n editor and API return 404.

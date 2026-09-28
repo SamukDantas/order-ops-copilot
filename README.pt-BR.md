@@ -12,7 +12,7 @@ Um varejista D2C multimarca vende produtos personalizados feitos sob encomenda (
 
 **https://order-ops-copilot.vercel.app** · login `demo@order-ops-copilot.dev` · senha `!UserTest30`
 
-A conta demo é revisora nas três marcas. A demo online roda o painel na Vercel e no Supabase (Londres) com pedidos que a IA revisou de verdade: 2 aprovados automaticamente e 5 aguardando uma pessoa, incluindo a tentativa de injeção de prompt. Os dados da demo são resetados de tempos em tempos.
+A conta demo é revisora nas três marcas. A demo online roda o painel na Vercel e no Supabase (Londres) com pedidos que a IA revisou de verdade: nas duas marcas fictícias, 2 aprovados automaticamente e 5 aguardando uma pessoa, incluindo a tentativa de injeção de prompt. Os dados da demo são resetados de tempos em tempos.
 
 A terceira marca, **Order Ops Demo Store**, é uma [loja de desenvolvimento real do Shopify](#loja-de-desenvolvimento-real-do-shopify): os pedidos chegam pelo webhook `orders/create` de verdade, e a decisão tomada na demo grava tags e nota no pedido pela Admin API. O pipeline de IA (n8n, gateway de LLM e Codex CLI) roda na máquina do autor, atrás de um túnel, então o ciclo com a loja real funciona enquanto ela está ligada; fora disso, a decisão é salva e chega ao Shopify automaticamente quando ela volta.
 
@@ -29,7 +29,7 @@ A terceira marca, **Order Ops Demo Store**, é uma [loja de desenvolvimento real
 ## Destaques
 
 - **Cerca de 10 s por item, do webhook à decisão:** Shopify `orders/create` → Supabase Edge Function (HMAC verificado, idempotente) → workflow n8n → LLM → Postgres → painel.
-- **Regras duras no código, julgamento no modelo.** Limite de caracteres, conjunto de caracteres permitido, emoji e padrões de injeção de prompt são verificações determinísticas que o modelo não pode anular. O modelo cuida de erros de digitação, datas impossíveis, palavrões, marcas registradas e tom.
+- **Regras duras no código, julgamento no modelo.** Limite de caracteres, conjunto de caracteres permitido, emoji e padrões de injeção de prompt são verificações determinísticas que o modelo não pode anular. Na loja real, o limite e a técnica de cada produto vêm dos metafields do Shopify, editáveis pelo lojista no admin. O modelo cuida de erros de digitação, datas impossíveis, palavrões, marcas registradas e tom.
 - **Falha segura por construção.** Qualquer falha da IA (recusa, timeout, JSON inválido, baixa confiança) manda o item para uma pessoa com o veredito `unavailable`. Nada é aprovado automaticamente na dúvida.
 - **Prompts versionados e avaliados.** 24 casos rotulados, e um prompt só entra se o recall de sinalização continuar em 100% e as aprovações automáticas indevidas em 0. A avaliação encontrou uma brecha real de injeção de prompt na v1, corrigida na v2 (veja o [histórico de avaliação](docs/EVALS.md)).
 - **Row Level Security entre marcas.** Revisores só veem e decidem pedidos das próprias marcas. As decisões passam por uma função `SECURITY DEFINER` que confere de novo, no servidor, o papel do usuário e as regras do produto. Coberto por testes de integração que fazem login como usuários reais.
@@ -89,7 +89,7 @@ flowchart TB
 | Componente | Responsabilidade | Por que fica ali |
 |---|---|---|
 | **Edge Function** | Verifica o HMAC sobre o corpo bruto, deduplica por `X-Shopify-Webhook-Id`, roda as verificações determinísticas e persiste | O Shopify exige resposta em até 5 s e reenvia em caso de falha. Persistir primeiro garante que nenhum pedido se perde se o n8n ou o LLM estiverem fora. |
-| **n8n** | Orquestração: claim, chamada ao LLM, retentativas, roteamento, write-back e tratamento de erros | A operação vê cada execução, pode reexecutá-la e mudar ramificações sem deploy. |
+| **n8n** | Orquestração: claim, chamada ao LLM, retentativas, roteamento, write-back, sincronização das regras e tratamento de erros | A operação vê cada execução, pode reexecutá-la e mudar ramificações sem deploy. |
 | **Gateway de LLM** | Um contrato estável na frente de qualquer provedor | O n8n roda em container, enquanto o Codex CLI e o login dele ficam no host. Trocar de provedor é uma variável de ambiente, não uma mudança de workflow. |
 | **Postgres + RLS** | Fonte da verdade e controle de acesso | Uma única camada de políticas protege o painel, a API e o que vier depois. Funções atômicas tornam cada passo do workflow tudo-ou-nada. |
 | **Painel** | Revisão humana | Só tem a chave publicável e age com o JWT do usuário logado. Nunca vê a `service_role`. |
@@ -124,10 +124,15 @@ sequenceDiagram
     participant UI as Painel
     actor R as Revisor
 
+    opt a cada hora, independente dos pedidos (loja real)
+        N->>S: token de acesso, depois produtos com metafields order_ops.*
+        N->>DB: sync_product_rules (uma transação)
+    end
+
     S->>EF: POST orders/create (HMAC)
     EF->>EF: verifica HMAC, ignora se o webhook id já foi visto
     Note over EF: loja desconhecida ou nenhum item personalizado: 200, nada a revisar
-    EF->>DB: upsert do pedido + itens com verificações determinísticas
+    EF->>DB: lê product_rules por SKU, upsert do pedido + itens com verificações determinísticas
     EF-)N: notify(order_id), em segundo plano
     EF-->>S: 200 accepted
 
@@ -255,9 +260,9 @@ As versões são as usadas para construir e validar o projeto (setembro de 2026)
 
 | Tecnologia | Versão | Papel |
 |---|---|---|
-| Admin GraphQL API | `2026-07` | `orderCreate`, `tagsAdd`, `orderUpdate`, assinaturas de webhook |
+| Admin GraphQL API | `2026-07` | `orderCreate`, `tagsAdd`, `orderUpdate`, assinaturas de webhook; leitura de produtos e metafields, `productSet` e `metafieldDefinitionCreate` (catálogo) |
 | Webhooks | `orders/create`, API `2026-07` | Entrada de pedidos, assinados com HMAC-SHA256 |
-| App do Dev Dashboard | client credentials grant | Token de acesso de 24 h, sem OAuth interativo |
+| App do Dev Dashboard | client credentials grant | Token de acesso de 24 h, sem OAuth interativo. Escopos: `read_orders`, `write_orders`, `read_products` e `write_products` (este só para o `catalogo`) |
 
 ### Painel
 
@@ -334,7 +339,7 @@ flowchart LR
     end
     T --> N8N
     N8N --> DB
-    N8N -->|tags + nota| SHOP
+    N8N -->|tags + nota, lê metafields| SHOP
 ```
 
 
@@ -354,14 +359,14 @@ docs/                 TDD, histórico de avaliação, capturas de tela
 supabase/
   migrations/         schema, RLS, funções do workflow e de decisão
   functions/          shopify-webhook + verificações e HMAC compartilhados (Deno)
-lib/                  requisição de revisão, roteamento, provedor de LLM, cliente da Admin API do Shopify (fonte única para o n8n e o eval)
+lib/                  requisição de revisão, roteamento, provedor de LLM, cliente da Admin API e regras dos metafields do Shopify (fonte única para o n8n e o eval)
 services/             gateway de LLM
 prompts/              prompts versionados + schema de saída
 n8n/                  docker-compose (n8n fixado), workflows gerados, política de tráfego do túnel
 evals/                casos rotulados
 fixtures/shopify/     payloads realistas de orders/create
 scripts/              setup, gerador de workflows, simulador, loja real (shopify), alvo do n8n, túnel, eval, seeds, capturas
-tests/                testes de integração de RLS
+tests/                testes de integração (RLS, decisões e sincronização de regras)
 web/                  painel Next.js
 ```
 
