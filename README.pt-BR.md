@@ -204,12 +204,67 @@ Detalhes em [docs/EVALS.md](docs/EVALS.md) (em inglês).
 
 ## Stack
 
-**Linguagem:** TypeScript de ponta a ponta, em modo estrito (`noUncheckedIndexedAccess`, `erasableSyntaxOnly`). O Node 24 executa direto, removendo os tipos, sem etapa de build. Os Code nodes do n8n recebem a mesma lógica, com os tipos removidos na geração.
-**Dados e backend:** Supabase (Postgres, Row Level Security, Auth, Edge Functions em Deno)
-**Orquestração:** n8n 2.x (Docker), workflows gerados a partir do código
-**IA:** Codex CLI (`gpt-5.6-luna`) ou Messages API do Claude, atrás de um gateway tipado (Node + TypeScript)
-**Frontend:** Next.js 16 (App Router, Server Actions, `proxy.ts`), React 19, Tailwind CSS 4
-**Testes:** `tsc` estrito + `deno check`, Deno test, test runner do Node, testes de integração de RLS contra o Supabase local, conjunto de avaliação do LLM, Playwright para as capturas de tela
+**Linguagem:** TypeScript de ponta a ponta, em modo estrito (`noUncheckedIndexedAccess`, `erasableSyntaxOnly`). O Node 24 executa os arquivos direto, por type stripping, sem etapa de build. Os Code nodes do n8n recebem a mesma lógica, com os tipos removidos na geração.
+
+As versões são as usadas para construir e validar o projeto (setembro de 2026).
+
+### Runtimes e infraestrutura
+
+| Tecnologia | Versão | Papel |
+|---|---|---|
+| [Node.js](https://nodejs.org) | 24.21 (mínimo 22.18) | Scripts, gateway de LLM, testes; executa `.ts` direto |
+| [TypeScript](https://www.typescriptlang.org) | 7.0 (raiz), 5.9 (painel) | Tipagem estrita em todo o código, só sintaxe apagável |
+| [Deno](https://deno.com) | 2.9 | Runtime da Edge Function, `deno check` e `deno test` |
+| [Docker](https://www.docker.com) + Compose | 29.6 + Compose 5.3 | Supabase local e n8n |
+| CLI do [Supabase](https://supabase.com) | 2.118 | Stack local, migrations, deploy de funções, secrets |
+| [PostgreSQL](https://www.postgresql.org) | 17.6 (Supabase) | Dados, Row Level Security, funções do workflow |
+| [n8n](https://n8n.io) | 2.40 (imagem Docker) | Orquestração; workflows gerados por código |
+| Agente do [ngrok](https://ngrok.com) | 3.37 | Túnel com domínio fixo que expõe só os webhooks do n8n |
+| [Vercel](https://vercel.com) | região `lhr1` | Hospedagem do painel, ao lado do Supabase em Londres |
+
+### IA
+
+| Tecnologia | Versão | Papel |
+|---|---|---|
+| [Codex CLI](https://github.com/openai/codex) | 0.155 | Provedor padrão, headless, com login da conta ChatGPT |
+| Modelos via Codex | `gpt-5.6-luna` (principal), `gpt-5.6-terra` (reserva) | Revisão da personalização com schema JSON estrito |
+| [SDK TypeScript da Anthropic](https://github.com/anthropics/anthropic-sdk-typescript) | 0.128 | Provedor alternativo (`LLM_PROVEDOR=anthropic`) |
+| Modelo via Anthropic | `claude-opus-5` | Mesmo prompt e schema do caminho Codex |
+
+### Shopify
+
+| Tecnologia | Versão | Papel |
+|---|---|---|
+| Admin GraphQL API | `2026-07` | `orderCreate`, `tagsAdd`, `orderUpdate`, assinaturas de webhook |
+| Webhooks | `orders/create`, API `2026-07` | Entrada de pedidos, assinados com HMAC-SHA256 |
+| App do Dev Dashboard | client credentials grant | Token de acesso de 24 h, sem OAuth interativo |
+
+### Painel
+
+| Tecnologia | Versão | Papel |
+|---|---|---|
+| [Next.js](https://nextjs.org) | 16.3 | App Router, Server Actions, `proxy.ts` |
+| [React](https://react.dev) | 19.2 | Interface |
+| [Tailwind CSS](https://tailwindcss.com) | 4.3 | Estilos, temas claro e escuro |
+| [supabase-js](https://github.com/supabase/supabase-js) + [@supabase/ssr](https://github.com/supabase/ssr) | 2.117 + 0.12 | Auth e consultas sob RLS (só a chave publicável) |
+| [ESLint](https://eslint.org) | 9.39 | Lint (`eslint-config-next`) |
+
+### Qualidade
+
+| Tecnologia | Versão | Papel |
+|---|---|---|
+| Test runner do Node | embutido no Node 24 | Testes unitários (`lib/`) e de integração do RLS |
+| Deno test | embutido no Deno 2.9 | Verificações determinísticas e HMAC |
+| Conjunto de avaliação do LLM | 24 casos rotulados | Portão do prompt: não pode regredir (veja [EVALS](docs/EVALS.md)) |
+| [Playwright](https://playwright.dev) | 1.63 | Capturas de tela do README |
+
+### Contas e serviços
+
+- **Shopify:** organização de parceiro com uma loja de desenvolvimento e um app no Dev Dashboard (gratuito).
+- **Supabase:** um projeto para a demo online (o plano gratuito basta); a stack local não exige conta.
+- **Vercel:** hospedagem do painel (plano Hobby).
+- **ngrok:** conta gratuita; o domínio dev estático mantém a URL do túnel fixa.
+- **LLM:** uma conta ChatGPT logada no Codex CLI ou uma chave da API da Anthropic com crédito.
 
 ## Rodando localmente
 

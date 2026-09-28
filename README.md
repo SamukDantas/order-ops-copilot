@@ -203,11 +203,66 @@ Details in [docs/EVALS.md](docs/EVALS.md).
 ## Tech stack
 
 **Language:** TypeScript end to end, in strict mode (`noUncheckedIndexedAccess`, `erasableSyntaxOnly`). Node 24 runs it natively through type stripping, with no build step. The n8n Code nodes get the same logic with its types removed at generation time.
-**Data and backend:** Supabase (Postgres, Row Level Security, Auth, Edge Functions on Deno)
-**Orchestration:** n8n 2.x (Docker), workflows generated from code
-**AI:** Codex CLI (`gpt-5.6-luna`) or Claude Messages API, behind a small typed gateway (Node + TypeScript)
-**Frontend:** Next.js 16 (App Router, Server Actions, `proxy.ts`), React 19, Tailwind CSS 4
-**Testing:** `tsc` strict + `deno check`, Deno test, Node test runner, RLS integration tests against local Supabase, LLM evaluation set, Playwright for screenshots
+
+Versions are the ones this project was built and verified with (September 2026).
+
+### Runtimes and infrastructure
+
+| Technology | Version | Role |
+|---|---|---|
+| [Node.js](https://nodejs.org) | 24.21 (minimum 22.18) | Scripts, LLM gateway, tests; runs `.ts` directly |
+| [TypeScript](https://www.typescriptlang.org) | 7.0 (root), 5.9 (dashboard) | Strict typing everywhere, type-only syntax |
+| [Deno](https://deno.com) | 2.9 | Edge Function runtime, `deno check` and `deno test` |
+| [Docker](https://www.docker.com) + Compose | 29.6 + Compose 5.3 | Local Supabase stack and n8n |
+| [Supabase](https://supabase.com) CLI | 2.118 | Local stack, migrations, function deploy, secrets |
+| [PostgreSQL](https://www.postgresql.org) | 17.6 (Supabase) | Data, Row Level Security, workflow functions |
+| [n8n](https://n8n.io) | 2.40 (Docker image) | Orchestration; workflows generated from code |
+| [ngrok](https://ngrok.com) agent | 3.37 | Fixed-domain tunnel exposing only the n8n webhooks |
+| [Vercel](https://vercel.com) | region `lhr1` | Dashboard hosting, next to Supabase in London |
+
+### AI
+
+| Technology | Version | Role |
+|---|---|---|
+| [Codex CLI](https://github.com/openai/codex) | 0.155 | Default provider, headless, with a ChatGPT account login |
+| Models via Codex | `gpt-5.6-luna` (main), `gpt-5.6-terra` (fallback) | Personalisation review with a strict JSON schema |
+| [Anthropic TypeScript SDK](https://github.com/anthropics/anthropic-sdk-typescript) | 0.128 | Alternative provider (`LLM_PROVEDOR=anthropic`) |
+| Model via Anthropic | `claude-opus-5` | Same prompt and schema as the Codex path |
+
+### Shopify
+
+| Technology | Version | Role |
+|---|---|---|
+| Admin GraphQL API | `2026-07` | `orderCreate`, `tagsAdd`, `orderUpdate`, webhook subscriptions |
+| Webhooks | `orders/create`, API `2026-07` | Order intake, signed with HMAC-SHA256 |
+| Dev Dashboard app | client credentials grant | 24 h access token, no interactive OAuth |
+
+### Dashboard
+
+| Technology | Version | Role |
+|---|---|---|
+| [Next.js](https://nextjs.org) | 16.3 | App Router, Server Actions, `proxy.ts` |
+| [React](https://react.dev) | 19.2 | UI |
+| [Tailwind CSS](https://tailwindcss.com) | 4.3 | Styling, light and dark themes |
+| [supabase-js](https://github.com/supabase/supabase-js) + [@supabase/ssr](https://github.com/supabase/ssr) | 2.117 + 0.12 | Auth and queries under RLS (publishable key only) |
+| [ESLint](https://eslint.org) | 9.39 | Linting (`eslint-config-next`) |
+
+### Quality
+
+| Technology | Version | Role |
+|---|---|---|
+| Node test runner | built into Node 24 | Unit tests (`lib/`) and RLS integration tests |
+| Deno test | built into Deno 2.9 | Deterministic checks and HMAC |
+| LLM evaluation set | 24 labelled cases | Prompt gate: no regression allowed (see [EVALS](docs/EVALS.md)) |
+| [Playwright](https://playwright.dev) | 1.63 | README screenshots |
+
+### Accounts and services
+
+- **Shopify:** a Partner organization with a development store and an app in the Dev Dashboard (free).
+- **Supabase:** one project for the online demo (free tier is enough); the local stack needs no account.
+- **Vercel:** hosting for the dashboard (Hobby plan).
+- **ngrok:** free account; its static dev domain keeps the tunnel URL fixed.
+- **LLM:** a ChatGPT account logged in to the Codex CLI, or an Anthropic API key with credit.
 
 ## Running locally
 
