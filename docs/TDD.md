@@ -130,6 +130,7 @@ erDiagram
       text sku
       int max_chars
       text charset "engraving | print | embroidery"
+      text source "manual | shopify"
     }
     orders {
       uuid id PK
@@ -176,6 +177,8 @@ erDiagram
 ```
 
 Additional tables: `webhook_events` (idempotency via `X-Shopify-Webhook-Id`) and `workflow_errors` (failures captured by the n8n error workflow).
+
+`product_rules` has two sources. `manual` rows are written by hand (the fictional brands in the seed). `shopify` rows come from the store: the n8n workflow "Sincronizar regras do Shopify" reads the `order_ops.max_chars` and `order_ops.charset` metafields (product, overridden by variant) every hour and calls `sync_product_rules` (`service_role` only), which in one transaction upserts them by SKU, replacing a manual rule for the same SKU, and removes `shopify` rows that left the store. Invalid metafields are skipped and logged to `workflow_errors`; an invalid rule in the payload aborts the whole sync, so the table is never half-updated. The Edge Function reads only `product_rules`, so ingestion does not depend on the Admin API.
 
 ### Row Level Security
 
@@ -229,13 +232,13 @@ The Edge Function and n8n use the `service_role` key server-side. The browser ne
 | 1 | Schema + RLS, Edge Function, Shopify webhook simulator, TDD | Done |
 | 2 | n8n workflows (review, sweep, apply-decision, error handler), prompt v1 + evaluation set | Done (prompt v2 after the evaluation found a prompt-injection gap) |
 | 3 | Dashboard (auth, brand filter, review queue, decisions), deploy on Vercel | Done |
-| 4 | Real Shopify development store, metrics, hardening | Store, write-back retry and metrics page done and verified end to end |
+| 4 | Real Shopify development store, metrics, hardening | Store, write-back retry, metrics page and rules from metafields done and verified end to end |
 
 ## 10. Decisions and open questions
 
 **Decided**
 
-- Per-product character limits: a static SKU map (`product_rules`) for v1. Reading them from product metafields is the v2 path.
+- Per-product character limits live in `product_rules`, read at ingestion. For a real store they come from product metafields (`order_ops.max_chars`, `order_ops.charset`) through an hourly sync, not a live Admin API call per order: the webhook stays fast and keeps working when Shopify is slow. The cost is up to an hour of delay after the merchant edits a limit (the sync can also be triggered on demand).
 - Auto-approval thresholds differ per brand (`brands.auto_approve_min_confidence`), with 0.7 as a floor.
 - LLM provider: Codex CLI by default, Claude Messages API as a drop-in alternative behind the same gateway.
 - Personalisation is stored as an ordered list of `{name, value}` in the order of the Shopify line item properties (a `jsonb` object would reorder the keys, and on an engraving the line order matters). A check constraint keeps it a list.

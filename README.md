@@ -52,6 +52,7 @@ flowchart TB
         WF1["Review order<br/>webhook + 5-min sweep"]
         WF2["Apply decision<br/>token + tags + note<br/>+ 5-min retry"]
         WF3["Error handler"]
+        WF4["Sync rules<br/>hourly, from metafields"]
     end
 
     subgraph HOST["LLM layer (host)"]
@@ -79,6 +80,8 @@ flowchart TB
     WF1 -. "crash" .-> WF3
     WF2 -. "crash" .-> WF3
     WF3 -- "workflow_errors" --> DB
+    WF4 -. "read product metafields" .-> STORE
+    WF4 -. "product_rules" .-> DB
 ```
 
 | Component | Responsibility | Why it lives there |
@@ -91,7 +94,7 @@ flowchart TB
 
 ### n8n workflows
 
-Both workflows are generated from code (`npm run workflows`) and imported by CLI. Node names are in Portuguese, the author's working language.
+The workflows are generated from code (`npm run workflows`) and imported by CLI. Node names are in Portuguese, the author's working language.
 
 **Review order:** two entry points (the Edge Function webhook and a 5-minute sweep for pending orders) share one path: an atomic claim, one LLM request per item with 3 retries, validation and routing, a transactional save, and then either the Shopify write-back or the failure log.
 
@@ -101,7 +104,9 @@ Both workflows are generated from code (`npm run workflows`) and imported by CLI
 
 ![n8n workflow "Aplicar decisão no Shopify": webhook and 5-minute retry sweep, fetch order, build tags and note, live branch (access token, then tags and note) or mock, log the sync](docs/screenshots/n8n-apply-decision.png)
 
-A third workflow, **error handler**, is wired as the error workflow for both and writes every failure to `workflow_errors`.
+**Sync rules from Shopify:** every hour (or on demand through an internal webhook), reads the `order_ops.max_chars` and `order_ops.charset` metafields of the store's products and variants and applies them to `product_rules` in one transaction (`sync_product_rules`). A variant overrides its product; an invalid rule is skipped and logged to `workflow_errors`, and the item falls back to the generic checks. The Edge Function keeps reading only Postgres, so ingestion never waits on the Admin API.
+
+A fourth workflow, **error handler**, is wired as the error workflow for the others and writes every failure to `workflow_errors`.
 
 ## Order lifecycle
 
@@ -301,11 +306,11 @@ Demo users: `ops@demo.test` (admin, both brands), `reviewer@demo.test` (reviewer
 |---|---|
 | `npm test` | Typecheck (`tsc` + `deno check`) and unit tests (Node + Deno) |
 | `npm run typecheck` | Typecheck only |
-| `npm run test:integration` | RLS and decision rules against local Supabase |
+| `npm run test:integration` | RLS, decision rules and the metafield rules sync against local Supabase |
 | `npm run eval` | Prompt evaluation (one real LLM call per case) |
 | `npm run workflows` | Regenerate `n8n/workflows/` from `lib/` and `prompts/` |
 | `npm run simular -- <fixture> [--novo-id] [--duplicar] [--hmac-invalido]` | Signed webhook simulator |
-| `npm run shopify -- verificar \| webhook <url> \| webhooks \| pedido <fixture\|all>` | Real development store: check access, register `orders/create`, create test orders |
+| `npm run shopify -- verificar \| webhook <url> \| webhooks \| pedido <fixture\|all> \| catalogo` | Real development store: check access, register `orders/create`, create test orders, create the products with their rules in metafields |
 | `npm run n8n:alvo -- <local\|nuvem>` | Point n8n at the local Supabase or at the online demo project |
 | `npm run tunel` | Expose only the two n8n webhooks through ngrok (fixed domain) |
 
@@ -334,10 +339,11 @@ flowchart LR
 1. **Access token:** the app and the store belong to the same organization, so the token comes from the *client credentials grant* (client ID + secret, no interactive OAuth). It lasts 24 h, so nothing long-lived is stored: the write-back workflow asks for a fresh token each time.
 2. **Webhook:** `npm run shopify -- webhook <url>` subscribes `orders/create` to the Edge Function in the online project. Shopify signs it with the app's client secret, which is the only value the function needs.
 3. **Protected customer data:** the app declares only the minimum (order data plus the customer's name, of which the reviewer sees the first name). Email, phone and address are not requested, so they never reach the system.
-4. **Test orders:** `npm run shopify -- pedido <fixture|all>` creates real test orders from the same fixtures the simulator uses, with the personalisation in line item properties.
-5. **Round trip:** `npm run n8n:alvo -- nuvem` points the local n8n at the online project, and `npm run tunel` exposes only `POST /webhook/review-order` and `POST /webhook/apply-decision` (an ngrok traffic policy returns 404 for the n8n editor and API; the webhooks still require their shared secret). `SHOPIFY_MODE=live` applies only to `SHOPIFY_STORE_DOMAIN`; the fictional brands stay in mock mode.
+4. **Test orders:** `npm run shopify -- pedido <fixture|all>` creates real test orders from the same fixtures the simulator uses, with the personalisation in line item properties. When the SKU exists in the store, the line item points to the real product variant.
+5. **Product rules in metafields:** `npm run shopify -- catalogo` (needs the `write_products` scope) creates the `order_ops.max_chars` and `order_ops.charset` metafield definitions, with validation, and the fixture products with their limits. The merchant edits a limit on the product page in the Shopify admin, and the hourly sync brings it to `product_rules`. Rules written by hand stay (`source = manual`) unless the store defines the same SKU.
+6. **Round trip:** `npm run n8n:alvo -- nuvem` points the local n8n at the online project, and `npm run tunel` exposes only `POST /webhook/review-order` and `POST /webhook/apply-decision` (an ngrok traffic policy returns 404 for the n8n editor and API; the webhooks still require their shared secret). `SHOPIFY_MODE=live` applies only to `SHOPIFY_STORE_DOMAIN`; the fictional brands stay in mock mode.
 
-Verified end to end: order #1001 ("Happy Anniversery") was created in the store, reviewed by the AI (`fix`, 0.99, "Anniversary"), approved in the online dashboard, and received the `personalisation-ok` and `human-reviewed` tags plus a note in Shopify.
+Verified end to end: order #1001 ("Happy Anniversery") was created in the store, reviewed by the AI (`fix`, 0.99, "Anniversary"), approved in the online dashboard, and received the `personalisation-ok` and `human-reviewed` tags plus a note in Shopify. Rules from metafields were verified the same way: with the keyring limit lowered to 10 in the Shopify admin and synced, order #1003 ("Olivia & Tom", 12 characters, otherwise clean) was flagged `over_limit` and sent to a human with a shorter suggestion.
 
 ## Project structure
 
@@ -361,7 +367,6 @@ web/                  Next.js dashboard
 
 ## Known limitations and next steps
 
-- **Product limits** come from a static SKU table (`product_rules`). A later version should read them from Shopify metafields.
 - **Full pipeline online:** the dashboard, database and webhook endpoint are live, and the AI pipeline serves them from the author's machine through a tunnel (see [Real Shopify development store](#real-shopify-development-store)). Running it always-on needs n8n and the LLM gateway on a small host, plus a hosted provider instead of a personal Codex login.
 - **Metrics history:** the Metrics page computes the current window on request. Trends over time (daily snapshots) and alerting when a brand misses a target are the next step.
 
