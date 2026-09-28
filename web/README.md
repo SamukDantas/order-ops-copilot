@@ -21,6 +21,7 @@ Review dashboard for Order Ops Copilot: the queue of personalised orders, the AI
 | `/login` | Email and password sign-in with Supabase Auth |
 | `/` | Review queue: KPIs, status tabs and brand filter, limited to the signed-in user's brands |
 | `/orders/[id]` | Customer text, deterministic checks, AI verdict and suggested fix, draft customer message, decision form and the latest Shopify sync |
+| `/metrics` | Per brand: auto-approval and human-review shares, p50/p95 time to AI review and to human decision, pending Shopify syncs; 7 days, 30 days or all time, against the TDD targets |
 
 ## How it stays safe
 
