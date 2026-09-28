@@ -12,7 +12,9 @@ A multi-brand D2C retailer sells made-to-order personalised products (engraving,
 
 **https://order-ops-copilot.vercel.app** · login `demo@order-ops-copilot.dev` · password `!UserTest30`
 
-The demo account is a reviewer on both brands. The online demo runs the dashboard on Vercel and Supabase (London) with orders that the AI really reviewed: 2 auto-approved and 5 waiting for a person, including the prompt-injection attempt. The AI pipeline (n8n, the LLM gateway and the Codex CLI) runs in the local setup below, so in the demo your decisions are saved but the Shopify write-back is disabled. Demo data is reset from time to time.
+The demo account is a reviewer on all three brands. The online demo runs the dashboard on Vercel and Supabase (London) with orders that the AI really reviewed: 2 auto-approved and 5 waiting for a person, including the prompt-injection attempt. Demo data is reset from time to time.
+
+The third brand, **Order Ops Demo Store**, is a real [Shopify development store](#real-shopify-development-store): its orders arrive through the actual `orders/create` webhook, and a decision taken in the demo writes tags and a note back to the order through the Admin API. The AI pipeline (n8n, the LLM gateway and the Codex CLI) runs on the author's machine behind a tunnel, so the real-store round trip works while it is online; otherwise decisions are saved and the dashboard says Shopify was not updated.
 
 | Review queue | Correction suggested by the AI |
 |---|---|
@@ -233,8 +235,23 @@ Demo users: `ops@demo.test` (admin, both brands), `reviewer@demo.test` (reviewer
 | `npm run eval` | Prompt evaluation (one real LLM call per case) |
 | `npm run workflows` | Regenerate `n8n/workflows/` from `lib/` and `prompts/` |
 | `npm run simular -- <fixture> [--novo-id] [--duplicar] [--hmac-invalido]` | Signed webhook simulator |
+| `npm run shopify -- verificar \| webhook <url> \| webhooks \| pedido <fixture\|all>` | Real development store: check access, register `orders/create`, create test orders |
+| `npm run n8n:alvo -- <local\|nuvem>` | Point n8n at the local Supabase or at the online demo project |
+| `npm run tunel` | Expose only the two n8n webhooks through ngrok (fixed domain) |
 
 To use Claude instead of Codex, set `LLM_PROVEDOR=anthropic` and `ANTHROPIC_API_KEY` in `.env` and restart the gateway.
+
+## Real Shopify development store
+
+Besides the signed-webhook simulator, the pipeline runs against a real development store (`order-ops-copilot-demo.myshopify.com`) and an app created in the Shopify Dev Dashboard:
+
+1. **Access token:** the app and the store belong to the same organization, so the token comes from the *client credentials grant* (client ID + secret, no interactive OAuth). It lasts 24 h, so nothing long-lived is stored: the write-back workflow asks for a fresh token each time.
+2. **Webhook:** `npm run shopify -- webhook <url>` subscribes `orders/create` to the Edge Function in the online project. Shopify signs it with the app's client secret, which is the only value the function needs.
+3. **Protected customer data:** the app declares only the minimum (order data plus the customer's name, of which the reviewer sees the first name). Email, phone and address are not requested, so they never reach the system.
+4. **Test orders:** `npm run shopify -- pedido <fixture|all>` creates real test orders from the same fixtures the simulator uses, with the personalisation in line item properties.
+5. **Round trip:** `npm run n8n:alvo -- nuvem` points the local n8n at the online project, and `npm run tunel` exposes only `POST /webhook/review-order` and `POST /webhook/apply-decision` (an ngrok traffic policy returns 404 for the n8n editor and API; the webhooks still require their shared secret). `SHOPIFY_MODE=live` applies only to `SHOPIFY_STORE_DOMAIN`; the fictional brands stay in mock mode.
+
+Verified end to end: order #1001 ("Happy Anniversery") was created in the store, reviewed by the AI (`fix`, 0.99, "Anniversary"), approved in the online dashboard, and received the `personalisation-ok` and `human-reviewed` tags plus a note in Shopify.
 
 ## Project structure
 
@@ -258,10 +275,10 @@ web/                  Next.js dashboard
 
 ## Known limitations and next steps
 
-- **Real Shopify development store:** write-back runs in mock mode today (`SHOPIFY_MODE=mock`), and the live path (Admin GraphQL `tagsAdd` + `orderUpdate`) is wired but not yet exercised against a store.
+- **Write-back retry:** a decision taken while the pipeline is offline is saved, but its Shopify update is not retried automatically yet. A sweep for decided orders without a successful sync would close that gap.
 - **Field order:** personalisation is stored as a `jsonb` object, and Postgres normalises key order. It should become an ordered list of `{name, value}`, which the rest of the pipeline already uses.
 - **Product limits** come from a static SKU table (`product_rules`). A later version should read them from Shopify metafields.
-- **Full pipeline online:** the dashboard and database are live (see [Live demo](#live-demo)). Running the AI pipeline online as well needs n8n and the LLM gateway on a small always-on host, plus a hosted provider instead of a personal Codex login.
+- **Full pipeline online:** the dashboard, database and webhook endpoint are live, and the AI pipeline serves them from the author's machine through a tunnel (see [Real Shopify development store](#real-shopify-development-store)). Running it always-on needs n8n and the LLM gateway on a small host, plus a hosted provider instead of a personal Codex login.
 - **Metrics:** p95 time-to-review and auto-approval rate per brand, from the data already stored.
 
 ## Author

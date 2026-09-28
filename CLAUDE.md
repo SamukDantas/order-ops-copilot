@@ -34,4 +34,9 @@ npm run db:reset         # recria o banco local com migrations + seed
 npm run simular -- all   # envia todos os webhooks de exemplo
 npm run gateway          # sobe o gateway de LLM (obrigatório para o n8n revisar)
 npm run test:integration # RLS contra o Supabase local
+npm run shopify -- verificar        # loja de desenvolvimento real (token por client credentials)
+npm run n8n:alvo -- <local|nuvem>   # Supabase que o n8n usa
+npm run tunel            # expõe só os webhooks do n8n (ngrok, domínio fixo)
 ```
+
+Loja real: `order-ops-copilot-demo.myshopify.com` (marca "Order Ops Demo Store"). Webhook `orders/create` → Edge Function do projeto online; `SHOPIFY_MODE=live` só vale para `SHOPIFY_STORE_DOMAIN`.

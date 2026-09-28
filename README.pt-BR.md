@@ -12,7 +12,9 @@ Um varejista D2C multimarca vende produtos personalizados feitos sob encomenda (
 
 **https://order-ops-copilot.vercel.app** · login `demo@order-ops-copilot.dev` · senha `!UserTest30`
 
-A conta demo é revisora nas duas marcas. A demo online roda o painel na Vercel e no Supabase (Londres) com pedidos que a IA revisou de verdade: 2 aprovados automaticamente e 5 aguardando uma pessoa, incluindo a tentativa de injeção de prompt. O pipeline de IA (n8n, gateway de LLM e Codex CLI) roda no ambiente local descrito abaixo, então na demo as decisões são salvas, mas o write-back no Shopify fica desativado. Os dados da demo são resetados de tempos em tempos.
+A conta demo é revisora nas três marcas. A demo online roda o painel na Vercel e no Supabase (Londres) com pedidos que a IA revisou de verdade: 2 aprovados automaticamente e 5 aguardando uma pessoa, incluindo a tentativa de injeção de prompt. Os dados da demo são resetados de tempos em tempos.
+
+A terceira marca, **Order Ops Demo Store**, é uma [loja de desenvolvimento real do Shopify](#loja-de-desenvolvimento-real-do-shopify): os pedidos chegam pelo webhook `orders/create` de verdade, e a decisão tomada na demo grava tags e nota no pedido pela Admin API. O pipeline de IA (n8n, gateway de LLM e Codex CLI) roda na máquina do autor, atrás de um túnel, então o ciclo com a loja real funciona enquanto ela está ligada; fora disso, a decisão é salva e o painel avisa que o Shopify não foi atualizado.
 
 | Fila de revisão | Correção sugerida pela IA |
 |---|---|
@@ -235,8 +237,23 @@ Usuários de demonstração: `ops@demo.test` (admin nas duas marcas), `reviewer@
 | `npm run eval` | Avaliação do prompt (uma chamada real ao LLM por caso) |
 | `npm run workflows` | Regenera `n8n/workflows/` a partir de `lib/` e `prompts/` |
 | `npm run simular -- <fixture> [--novo-id] [--duplicar] [--hmac-invalido]` | Simulador de webhooks assinados |
+| `npm run shopify -- verificar \| webhook <url> \| webhooks \| pedido <fixture\|all>` | Loja de desenvolvimento real: confere o acesso, registra `orders/create`, cria pedidos de teste |
+| `npm run n8n:alvo -- <local\|nuvem>` | Aponta o n8n para o Supabase local ou para o projeto da demo online |
+| `npm run tunel` | Expõe só os dois webhooks do n8n pelo ngrok (domínio fixo) |
 
 Para usar o Claude em vez do Codex, defina `LLM_PROVEDOR=anthropic` e `ANTHROPIC_API_KEY` no `.env` e reinicie o gateway.
+
+## Loja de desenvolvimento real do Shopify
+
+Além do simulador de webhooks assinados, o pipeline roda contra uma loja de desenvolvimento real (`order-ops-copilot-demo.myshopify.com`) e um app criado no Dev Dashboard do Shopify:
+
+1. **Token de acesso:** o app e a loja são da mesma organização, então o token sai do *client credentials grant* (client ID + secret, sem OAuth interativo). Ele vale 24 h, por isso nada de longa duração fica guardado: o workflow de write-back pede um token novo a cada execução.
+2. **Webhook:** `npm run shopify -- webhook <url>` assina `orders/create` na Edge Function do projeto online. O Shopify assina com o client secret do app, o único valor de que a função precisa.
+3. **Dados protegidos de clientes:** o app declara só o mínimo (dados do pedido e o nome do cliente, do qual o revisor vê o primeiro nome). E-mail, telefone e endereço não são pedidos, então nem chegam ao sistema.
+4. **Pedidos de teste:** `npm run shopify -- pedido <fixture|all>` cria pedidos de teste reais a partir das mesmas fixtures do simulador, com a personalização em line item properties.
+5. **Ciclo completo:** `npm run n8n:alvo -- nuvem` aponta o n8n local para o projeto online, e `npm run tunel` expõe só `POST /webhook/review-order` e `POST /webhook/apply-decision` (uma traffic policy do ngrok responde 404 para o editor e a API do n8n; os webhooks continuam exigindo o segredo compartilhado). `SHOPIFY_MODE=live` vale só para `SHOPIFY_STORE_DOMAIN`; as marcas fictícias seguem em modo simulado.
+
+Validado de ponta a ponta: o pedido #1001 ("Happy Anniversery") foi criado na loja, revisado pela IA (`fix`, 0,99, "Anniversary"), aprovado no painel online e recebeu no Shopify as tags `personalisation-ok` e `human-reviewed`, além da nota.
 
 ## Estrutura do projeto
 
@@ -260,10 +277,10 @@ web/                  painel Next.js
 
 ## Limitações conhecidas e próximos passos
 
-- **Loja de desenvolvimento real do Shopify:** hoje o write-back roda em modo simulado (`SHOPIFY_MODE=mock`). O caminho real (Admin GraphQL `tagsAdd` + `orderUpdate`) está implementado, mas ainda não foi exercitado contra uma loja.
+- **Reenvio do write-back:** uma decisão tomada com o pipeline fora do ar fica salva, mas a atualização no Shopify ainda não é reenviada automaticamente. Uma varredura de pedidos decididos sem sync bem-sucedido fecharia essa lacuna.
 - **Ordem dos campos:** a personalização é gravada como objeto `jsonb`, e o Postgres reordena as chaves. Ela deveria virar uma lista ordenada de `{name, value}`, formato que o resto do pipeline já usa.
 - **Limites por produto** vêm de uma tabela estática por SKU (`product_rules`). Uma versão futura deve lê-los dos metafields do Shopify.
-- **Pipeline completo online:** o painel e o banco já estão no ar (veja a [Demo online](#demo-online)). Colocar o pipeline de IA online também exige o n8n e o gateway de LLM num host pequeno sempre ligado, com um provedor hospedado no lugar do login pessoal do Codex.
+- **Pipeline completo online:** o painel, o banco e o endpoint de webhooks já estão no ar, e o pipeline de IA os atende a partir da máquina do autor por um túnel (veja [Loja de desenvolvimento real do Shopify](#loja-de-desenvolvimento-real-do-shopify)). Deixá-lo sempre ligado exige o n8n e o gateway de LLM num host pequeno, com um provedor hospedado no lugar do login pessoal do Codex.
 - **Métricas:** p95 do tempo até a revisão e taxa de aprovação automática por marca, a partir dos dados já gravados.
 
 ## Autor
